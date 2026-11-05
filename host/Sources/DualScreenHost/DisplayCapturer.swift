@@ -46,7 +46,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let config = SCStreamConfiguration()
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.queueDepth = 8
-        config.showsCursor = false
+        config.showsCursor = true // cursor must be visible on the tablet
         config.width = pixelWidth
         config.height = pixelHeight
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange

@@ -9,6 +9,7 @@ import CGVirtualDisplayShim
 // or Wi-Fi). Touch input flows back as JSON and is injected with CGEvent.
 
 let args = CommandLine.arguments
+setbuf(stdout, nil) // unbuffered logs even through pipes
 func argValue(_ name: String, _ fallback: String) -> String {
     if let i = args.firstIndex(of: name), i + 1 < args.count { return args[i + 1] }
     return fallback
@@ -67,6 +68,32 @@ final class Pipeline {
     private let lock = NSLock()
     private var fpsWindowStart = Date()
     private var fpsCount = 0
+    private var dbgPackets = 0
+    private var dbgKeysDumped = 0
+
+    /// Walks Annex-B NALs and prints their HEVC types (32=VPS, 33=SPS, 34=PPS).
+    func dumpNalTypes(_ data: Data) {
+        var types: [Int] = []
+        var i = data.startIndex
+        while i < data.endIndex - 4 {
+            if data[i] == 0, data[i + 1] == 0, data[i + 2] == 0, data[i + 3] == 1 {
+                if i + 4 < data.endIndex {
+                    types.append(Int((data[i + 4] & 0x7E) >> 1))
+                }
+                i += 4
+            } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
+                if i + 3 < data.endIndex {
+                    types.append(Int((data[i + 3] & 0x7E) >> 1))
+                }
+                i += 3
+            } else {
+                i += 1
+            }
+        }
+        print("[ds] keyframe NAL types: \(types)")
+        let head = data.prefix(24).map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[ds] keyframe head: \(head)")
+    }
 
     init(displayID: CGDirectDisplayID) {
         capturer = DisplayCapturer(displayID: displayID)
@@ -83,8 +110,16 @@ final class Pipeline {
         guard !started else { return }
         started = true
 
-        encoder.onPacket = { [weak server] data, _, _ in
+        encoder.onPacket = { [weak server] data, _, isKey in
             guard let server else { return }
+            self.dbgPackets += 1
+            if self.dbgPackets <= 5 {
+                print("[ds] packet#\(self.dbgPackets): \(data.count) bytes, key=\(isKey)")
+            }
+            if isKey && self.dbgKeysDumped < 2 {
+                self.dbgKeysDumped += 1
+                self.dumpNalTypes(data)
+            }
             server.sendVideo(data)
             self.noteFrameSent()
         }

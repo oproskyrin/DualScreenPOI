@@ -57,14 +57,14 @@ static void packet_cb(void *outputCallbackRefCon,
     static const UInt8 startCode[4] = {0x00, 0x00, 0x00, 0x01};
 
     if (isKey) {
-        // VPS(32)/SPS(33)/PPS(34): iterate until the API stops returning them.
+        // Iterate all parameter sets (VPS/SPS/PPS, possibly SEI) from the
+        // HEVC decoder configuration record. NOTE: the last parameter is
+        // NALUnitHeaderLengthOut (length-field size), NOT the NAL type.
         for (size_t i = 0; i < 8; i++) {
             const uint8_t *ptr = NULL;
             size_t size = 0;
-            int32_t nalType = 0;
             if (CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    fd, i, &ptr, &size, NULL, &nalType) != noErr || ptr == NULL) break;
-            if (nalType != 32 && nalType != 33 && nalType != 34) break;
+                    fd, i, &ptr, &size, NULL, NULL) != noErr || ptr == NULL) break;
             [out appendBytes:startCode length:4];
             [out appendBytes:ptr length:size];
         }
