@@ -21,6 +21,8 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
     private var frameCount = 0L
     private var windowStart = System.currentTimeMillis()
     @Volatile var fps = 0.0
+    /** Smoothed end-to-end latency (capture -> render), milliseconds. */
+    @Volatile var latencyMs = 0.0
     var lastError: String? = null
         private set
 
@@ -103,7 +105,8 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
                 val buf = c.getInputBuffer(index) ?: return
                 buf.clear()
                 buf.put(accessUnit)
-                inputPts += 1_000_000 / 240
+                // wall-clock pts -> the renderer measures true end-to-end latency
+                inputPts = System.nanoTime() / 1000
                 c.queueInputBuffer(index, 0, accessUnit.size, inputPts, 0)
             }
         } catch (_: Exception) {
@@ -118,6 +121,11 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
             try {
                 val out = c.dequeueOutputBuffer(info, 10_000)
                 if (out >= 0) {
+                    val nowUs = System.nanoTime() / 1000
+                    val lat = (nowUs - info.presentationTimeUs) / 1000.0
+                    if (lat in 0.0..500.0) { // sanity clamp
+                        latencyMs = latencyMs * 0.8 + lat * 0.2
+                    }
                     c.releaseOutputBuffer(out, true)
                     frameCount++
                     val now = System.currentTimeMillis()

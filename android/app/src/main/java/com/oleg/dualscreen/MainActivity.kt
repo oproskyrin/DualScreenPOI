@@ -35,13 +35,31 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     private lateinit var addressEdit: EditText
     private lateinit var hzButton: Button
     private lateinit var keyboardButton: Button
+    private lateinit var settingsButton: Button
     private lateinit var kbBuffer: EditText
 
     private var connection: DsxpConnection? = null
     private var decoder: VideoDecoder? = null
     private val audioPlayer = AudioPlayer()
+    private var config = JSONObject()
     private var streaming = false
     private var everConnected = false
+    private val statsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val statsUpdater = object : Runnable {
+        override fun run() {
+            if (streaming) {
+                val d = decoder
+                val lat = d?.latencyMs ?: 0.0
+                val fps = d?.fps ?: 0.0
+                val hostFps = lastHostStats?.optDouble("hostFps", 0.0) ?: 0.0
+                val mode = lastHostStats?.optString("mode") ?: config.optString("mirror").let { if (it == "true") "mirror" else "extend" }
+                statusText.text = String.format(
+                    "%s • %.0f мс • %.0f fps (хост %.0f)",
+                    if (mode == "mirror") "зеркало" else "расширение", lat, fps, hostFps)
+                statsHandler.postDelayed(this, 1000)
+            }
+        }
+    }
 
     private val hzOptions = intArrayOf(144, 120, 90, 60)
     private var hzIndex = 0
@@ -108,7 +126,15 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
             alpha = 0.35f
             setOnClickListener { toggleKeyboard() }
         }
-        root.addView(keyboardButton, FrameLayout.LayoutParams(
+        settingsButton = Button(this).apply {
+            text = "⚙"
+            alpha = 0.35f
+            setOnClickListener { showSettings() }
+        }
+        val topButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        topButtons.addView(keyboardButton)
+        topButtons.addView(settingsButton)
+        root.addView(topButtons, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.END).apply {
             rightMargin = pad; topMargin = 0
@@ -270,16 +296,26 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
                 statusText.text = "Mac отказал: $config"
                 return@runOnUiThread
             }
-            pendingWidth = config.optInt("width", 2944)
-            pendingHeight = config.optInt("height", 1840)
+            // resolution changed (mode switch on the host): restart the decoder
+            // from the next keyframe instead of trusting adaptive decode
+            val newW = config.optInt("width", 2944)
+            val newH = config.optInt("height", 1840)
+            if (this.config.optInt("width", newW) != newW ||
+                this.config.optInt("height", newH) != newH) {
+                decoder?.stop()
+                decoder = null
+            }
+            this.config = config
+            pendingWidth = newW
+            pendingHeight = newH
             val fps = config.optInt("fps", 120)
             everConnected = true
             streaming = true
             controls.visibility = View.GONE
-            statusText.text = "онлайн ${pendingWidth}×${pendingHeight} @ $fps fps" +
-                if (config.optBoolean("audio", false) || config.has("audio")) " +звук" else ""
             if (config.optString("audio").isNotEmpty()) audioPlayer.start()
             hideSystemUi()
+            statsHandler.removeCallbacks(statsUpdater)
+            statsHandler.post(statsUpdater)
         }
     }
 
@@ -303,10 +339,41 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         d.feed(annexB)
     }
 
-    override fun onStats(stats: JSONObject) {}
+    override fun onStats(stats: JSONObject) {
+        lastHostStats = stats
+    }
 
     override fun onAudio(pcm: ByteArray) {
         audioPlayer.feed(pcm)
+    }
+
+    // ---------------- remote settings panel ----------------
+
+    private var lastHostStats: JSONObject? = null
+
+    private fun showSettings() {
+        val modes = arrayOf("Расширение (второй экран)", "Зеркало (повтор экрана)")
+        val logicals = arrayOf("1472×920 (крупно)", "1920×1200 (баланс)", "2944×1840 (1:1)")
+        val logicalVals = arrayOf("1472x920", "1920x1200", "2944x1840")
+        val conn = connection
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Настройки Mac-хоста")
+            .setSingleChoiceItems(modes + logicals, -1) { dialog, which ->
+                val json = JSONObject()
+                when {
+                    which < modes.size -> json.put("cmd", "setMode")
+                        .put("mode", if (which == 0) "extend" else "mirror")
+                    else -> {
+                        val v = logicalVals[which - modes.size].split("x")
+                        json.put("cmd", "setLogical").put("w", v[0].toInt()).put("h", v[1].toInt())
+                    }
+                }
+                conn?.sendCommand(json)
+                dialog.dismiss()
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
     }
 
     override fun onDisconnected(reason: String?) {
@@ -443,6 +510,7 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     }
 
     override fun onDestroy() {
+        statsHandler.removeCallbacks(statsUpdater)
         connection?.close()
         decoder?.stop()
         audioPlayer.stop()

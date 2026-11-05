@@ -105,6 +105,9 @@ class DsxpConnection(
 
     fun sendInput(json: JSONObject) = sendFrame(0x02, json.toString().toByteArray())
 
+    /** Remote control commands (setMode/setLogical/setFps), type 0x00. */
+    fun sendCommand(json: JSONObject) = sendFrame(0x00, json.toString().toByteArray())
+
     fun sendStats(json: JSONObject) = sendFrame(0x03, json.toString().toByteArray())
 
     private fun sendFrame(type: Int, payload: ByteArray) {

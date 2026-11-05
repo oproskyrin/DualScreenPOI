@@ -1,12 +1,15 @@
 import Foundation
+import AppKit
 import CoreGraphics
 import CGVirtualDisplayShim
 
-// DualScreenHost — turns an Android tablet into a true extended display.
+// DualScreenHost — turns an Android tablet into a second display for macOS.
 //
-// Pipeline: CGVirtualDisplay (private API) -> ScreenCaptureKit ->
-// VideoToolbox HEVC (hardware, realtime) -> TCP (USB via `adb reverse`,
-// or Wi-Fi). Touch input flows back as JSON and is injected with CGEvent.
+// Pipeline: CGVirtualDisplay (private API, extend) or the main display
+// (mirror) -> ScreenCaptureKit -> VideoToolbox HEVC (hardware, realtime) ->
+// TCP (USB via `adb reverse`, Wi-Fi with mDNS). Touch input flows back as
+// JSON and is injected with CGEvent. Runs as a menu bar app; modes and
+// quality are switchable live from the menu or from the tablet.
 
 let args = CommandLine.arguments
 setbuf(stdout, nil) // unbuffered logs even through pipes
@@ -15,115 +18,8 @@ func argValue(_ name: String, _ fallback: String) -> String {
     return fallback
 }
 
-let width0 = Int(argValue("--width", "2944"))!
-let height0 = Int(argValue("--height", "1840"))!
-let fps = Int(argValue("--fps", "120"))!
-let bitrateMbps = Int(argValue("--bitrate", "80"))!
-let port = UInt16(argValue("--port", "7381"))!
-let hidpi = args.contains("--no-hidpi") ? false : true
-// --mirror: stream the main display as-is (no virtual display created)
-let mirror = args.contains("--mirror")
-// --logical WxH (extend mode): pick the display's logical resolution.
-// Bigger = sharper stream (less upscaling to 2944x1840) but smaller UI.
-// 1472x920 = comfy default; 2944x1840 = pixel-perfect 1:1.
-let logicalArg = argValue("--logical", "")
-// First rate is the active display mode (max first), rest are selectable.
-let rates: [Double] = [144, 120, 90, 60]
+// MARK: - Pipeline
 
-print("[ds] DualScreenHost starting: mode=\(mirror ? "mirror" : "extend") \(width0)x\(height0)@\(fps)fps, \(bitrateMbps) Mbps, port \(port), hidpi=\(hidpi)")
-
-var displayID: CGDirectDisplayID = 0
-var width = width0
-var height = height0
-
-if mirror {
-    // Mirror mode: capture the main display, no virtual display at all.
-    displayID = CGMainDisplayID()
-    // Apple Silicon built-in panels hide their 2x backing: CG reports the
-    // logical size as "pixels" (e.g. 1408x881). Request 2x from SCK — it
-    // caps at the real native backing (2816x1762), giving a retina mirror.
-    let b = CGDisplayBounds(displayID)
-    let pxW = CGDisplayPixelsWide(displayID)
-    let pxH = CGDisplayPixelsHigh(displayID)
-    if pxW <= Int(b.width) + 1 && pxH <= Int(b.height) + 1 {
-        width = pxW * 2
-        height = pxH * 2
-    } else {
-        width = pxW
-        height = pxH
-    }
-    print("[ds] mirroring main display: \(width)x\(height) px (id=\(displayID))")
-} else {
-// 1. Screen Recording permission (TCC). Prompts on first run.
-if !CGPreflightScreenCaptureAccess() {
-    print("[ds] requesting Screen Recording permission…")
-    _ = CGRequestScreenCaptureAccess()
-}
-
-// 2. Create the virtual extended display (must run on main thread — we are).
-let createdID = rates.withUnsafeBufferPointer { ratesBuf in
-    vd_create_display(UInt32(width), UInt32(height),
-                      ratesBuf.baseAddress, ratesBuf.count,
-                      hidpi,
-                      0x041A, 0x371F, 0x2023, // Lenovo-ish vendor/product (arbitrary, stable)
-                      "Xiaoxin Pad Pro 12.7")
-}
-guard createdID != 0 else {
-    FileHandle.standardError.write("FATAL: virtual display creation failed\n".data(using: .utf8)!)
-    exit(1)
-}
-displayID = createdID
-print("[ds] virtual display created: id=\(displayID)")
-
-// 3. Position the virtual display right of the main display with aligned
-// top edge — also forces "extend" if macOS auto-mirrored the new display.
-do {
-    var config: CGDisplayConfigRef?
-    if CGBeginDisplayConfiguration(&config) == CGError.success {
-        let mainBounds = CGDisplayBounds(CGMainDisplayID())
-        CGConfigureDisplayOrigin(config, displayID, Int32(mainBounds.maxX), Int32(mainBounds.minY))
-        _ = CGCompleteDisplayConfiguration(config, .permanently)
-        print("[ds] positioned at (\(Int(mainBounds.maxX)), \(Int(mainBounds.minY))) — right of main")
-    }
-    if CGDisplayIsInMirrorSet(displayID) != 0 {
-        print("[ds] warning: still in mirror set")
-    }
-}
-
-// 3b. Logical resolution: with hidpi on the shim declares half-size modes
-// (1472x920 default). --logical WxH overrides with any ladder mode —
-// closer to native = sharper stream (SCK upscales the backing to 2944x1840).
-if !mirror {
-    Thread.sleep(forTimeInterval: 0.5) // let WindowServer settle
-    if let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] {
-        var targetW = width / 2, targetH = height / 2
-        if !logicalArg.isEmpty {
-            let parts = logicalArg.split(whereSeparator: { $0 == "x" || $0 == "X" })
-            if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
-                targetW = w; targetH = h
-            } else {
-                print("[ds] bad --logical \"\(logicalArg)\" (want WxH); using default")
-            }
-        }
-        // closest ladder mode to the requested logical size
-        let want = modes.min {
-            let d1 = abs($0.width - targetW) + abs($0.height - targetH)
-            let d2 = abs($1.width - targetW) + abs($1.height - targetH)
-            return d1 == d2 ? $0.refreshRate > $1.refreshRate : d1 < d2
-        }
-        if let want {
-            let err = CGDisplaySetDisplayMode(displayID, want, nil)
-            let b = CGDisplayBounds(displayID)
-            print("[ds] logical \(want.width)x\(want.height)@\(Int(want.refreshRate)): err=\(err.rawValue), " +
-                  "bounds=\(Int(b.width))x\(Int(b.height)) pts, mode px=\(want.pixelWidth)x\(want.pixelHeight)")
-        } else {
-            print("[ds] no modes available for logical selection")
-        }
-    }
-}
-} // end extend-mode setup
-
-let injector = InputInjector(displayID: displayID)
 final class Pipeline {
     let capturer: DisplayCapturer
     let encoder = VideoEncoder()
@@ -136,6 +32,7 @@ final class Pipeline {
     private var dbgKeysDumped = 0
     private var forceKeyFrames = 0
     private var lastRestart = Date.distantPast
+    private(set) var currentFps: Double = 0
 
     /// Walks Annex-B NALs and prints their HEVC types (32=VPS, 33=SPS, 34=PPS).
     func dumpNalTypes(_ data: Data) {
@@ -143,22 +40,16 @@ final class Pipeline {
         var i = data.startIndex
         while i < data.endIndex - 4 {
             if data[i] == 0, data[i + 1] == 0, data[i + 2] == 0, data[i + 3] == 1 {
-                if i + 4 < data.endIndex {
-                    types.append(Int((data[i + 4] & 0x7E) >> 1))
-                }
+                if i + 4 < data.endIndex { types.append(Int((data[i + 4] & 0x7E) >> 1)) }
                 i += 4
             } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
-                if i + 3 < data.endIndex {
-                    types.append(Int((data[i + 3] & 0x7E) >> 1))
-                }
+                if i + 3 < data.endIndex { types.append(Int((data[i + 3] & 0x7E) >> 1)) }
                 i += 3
             } else {
                 i += 1
             }
         }
         print("[ds] keyframe NAL types: \(types)")
-        let head = data.prefix(24).map { String(format: "%02x", $0) }.joined(separator: " ")
-        print("[ds] keyframe head: \(head)")
     }
 
     init(displayID: CGDirectDisplayID) {
@@ -170,6 +61,26 @@ final class Pipeline {
                 if force { self.forceKeyFrames -= 1 }
                 self.encoder.encode(frame: buffer, forceKeyframe: force)
             }
+        }
+    }
+
+    /// Attaches output sinks. Called on every (re)configuration.
+    func wire(server: FrameServer) {
+        encoder.onPacket = { [weak server] data, _, isKey in
+            guard let server else { return }
+            self.dbgPackets += 1
+            if self.dbgPackets <= 3 {
+                print("[ds] packet#\(self.dbgPackets): \(data.count) bytes, key=\(isKey)")
+            }
+            if isKey && self.dbgKeysDumped < 1 {
+                self.dbgKeysDumped += 1
+                self.dumpNalTypes(data)
+            }
+            server.sendVideo(data)
+            self.noteFrameSent()
+        }
+        capturer.onAudio = { [weak server] pcm in
+            server?.sendAudio(pcm)
         }
     }
 
@@ -196,24 +107,7 @@ final class Pipeline {
         lock.lock(); defer { lock.unlock() }
         guard !started else { return }
         started = true
-
-        encoder.onPacket = { [weak server] data, _, isKey in
-            guard let server else { return }
-            self.dbgPackets += 1
-            if self.dbgPackets <= 5 {
-                print("[ds] packet#\(self.dbgPackets): \(data.count) bytes, key=\(isKey)")
-            }
-            if isKey && self.dbgKeysDumped < 2 {
-                self.dbgKeysDumped += 1
-                self.dumpNalTypes(data)
-            }
-            server.sendVideo(data)
-            self.noteFrameSent()
-        }
-
-        capturer.onAudio = { [weak server] pcm in
-            server?.sendAudio(pcm)
-        }
+        wire(server: server)
 
         let sem = DispatchSemaphore(value: 0)
         captureW = width; captureH = height; captureFps = fps
@@ -232,70 +126,317 @@ final class Pipeline {
         sem.wait()
     }
 
-    func noteFrameSent() {
+    /// Full stop so a new start() can reconfigure (mode/fps/bitrate switch).
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        guard started else { return }
+        started = false
+        encoderReady = false
+        let capt = capturer
+        capturer.onAudio = nil
+        encoder.onPacket = nil
+        encoder.stop()
+        Task.detached { capt.stop() }
+    }
+
+    private func noteFrameSent() {
         fpsCount += 1
         let now = Date()
-        if now.timeIntervalSince(fpsWindowStart) >= 5 {
-            let f = Double(fpsCount) / now.timeIntervalSince(fpsWindowStart)
-            print(String(format: "[ds] sending %.1f fps", f))
+        if now.timeIntervalSince(fpsWindowStart) >= 2 {
+            currentFps = Double(fpsCount) / now.timeIntervalSince(fpsWindowStart)
+            print(String(format: "[ds] sending %.1f fps", currentFps))
             fpsWindowStart = now
             fpsCount = 0
         }
     }
 }
 
-let server = FrameServer()
-let pipeline = Pipeline(displayID: displayID)
+// MARK: - HostApp
 
-server.onControl = { hello in
-    guard (hello["magic"] as? String) == "DSXP" else { return }
-    let clientW = hello["width"] as? Int ?? width
-    let clientH = hello["height"] as? Int ?? height
-    let clientHz = hello["maxRefresh"] as? Int ?? 144
-    print("[ds] tablet says hello: \(clientW)x\(clientH), panel \(clientHz) Hz")
+final class HostApp {
+    enum Mode: String { case extend, mirror }
 
-    pipeline.start(server: server, width: width, height: height, fps: fps,
-                   bitrateBps: bitrateMbps * 1_000_000)
-    pipeline.kickAfterReconnect()
-    server.sendControl([
-        "ok": true,
-        "width": width,
-        "height": height,
-        "fps": fps,
-        "bitrate": bitrateMbps * 1_000_000,
-        "codec": "hevc",
-        "mirror": mirror,
-        "audio": "pcm16",
-        "audioRate": 48000,
-        "audioChannels": 2,
-        "displayID": Int(displayID),
-    ])
-    injector.refreshBounds()
+    struct Settings {
+        var mode: Mode
+        var logicalW: Int
+        var logicalH: Int
+        var panelW: Int
+        var panelH: Int
+        var fps: Int
+        var bitrateMbps: Int
+        var port: UInt16
+        var hidpi: Bool
+    }
+
+    private(set) var settings: Settings
+    let server = FrameServer()
+
+    private(set) var displayID: CGDirectDisplayID = 0
+    private(set) var streamW = 0
+    private(set) var streamH = 0
+    private var virtualCreated = false
+    private var injector: InputInjector?
+    private(set) var pipeline: Pipeline?
+    private let rates: [Double] = [144, 120, 90, 60]
+
+    init(settings: Settings) {
+        self.settings = settings
+    }
+
+    func run() {
+        // Screen Recording permission (TCC). Prompts on first run.
+        if !CGPreflightScreenCaptureAccess() {
+            print("[ds] requesting Screen Recording permission…")
+            _ = CGRequestScreenCaptureAccess()
+        }
+
+        wireServer()
+        do {
+            try server.start(port: settings.port)
+        } catch {
+            FileHandle.standardError.write("FATAL: cannot listen on port \(settings.port): \(error)\n".data(using: .utf8)!)
+            exit(1)
+        }
+
+        applyMode()
+
+        // periodic stats to the tablet
+        let statsTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            self?.sendStats()
+        }
+        RunLoop.main.add(statsTimer, forMode: .common)
+
+        // USB autopilot: plug the cable -> everything connects by itself
+        if let usb = UsbWatchdog(server: server, port: settings.port) {
+            let usbTimer = Timer(timeInterval: 2, repeats: true) { _ in usb.tick() }
+            RunLoop.main.add(usbTimer, forMode: .common)
+        }
+
+        MenuBar(host: self)
+        setupSignalHandler()
+        print("[ds] ready (menu bar icon active)")
+        RunLoop.main.run()
+    }
+
+    // MARK: mode / display lifecycle
+
+    /// Teardown + setup for the current settings. Safe to call repeatedly.
+    func applyMode() {
+        pipeline?.reset()
+        pipeline = nil
+        if virtualCreated {
+            vd_release_display()
+            virtualCreated = false
+            displayID = 0
+        }
+
+        switch settings.mode {
+        case .mirror:
+            displayID = CGMainDisplayID()
+            // Apple Silicon built-ins hide their 2x backing (CG reports the
+            // logical size as "pixels"). Request 2x from SCK — it caps at the
+            // real native backing, giving a retina mirror.
+            let b = CGDisplayBounds(displayID)
+            let pxW = CGDisplayPixelsWide(displayID)
+            let pxH = CGDisplayPixelsHigh(displayID)
+            if pxW <= Int(b.width) + 1 && pxH <= Int(b.height) + 1 {
+                streamW = pxW * 2
+                streamH = pxH * 2
+            } else {
+                streamW = pxW
+                streamH = pxH
+            }
+            print("[ds] mirror: main display \(streamW)x\(streamH) px")
+
+        case .extend:
+            // Create the virtual display (main thread required — we are).
+            let created = rates.withUnsafeBufferPointer { ratesBuf in
+                vd_create_display(UInt32(settings.panelW), UInt32(settings.panelH),
+                                  ratesBuf.baseAddress, ratesBuf.count,
+                                  settings.hidpi,
+                                  0x041A, 0x371F, 0x2023,
+                                  "Xiaoxin Pad Pro 12.7")
+            }
+            guard created != 0 else {
+                print("[ds] FATAL: virtual display creation failed")
+                return
+            }
+            displayID = created
+            virtualCreated = true
+            streamW = settings.panelW
+            streamH = settings.panelH
+            print("[ds] extend: virtual display id=\(displayID)")
+
+            positionRightOfMain()
+            applyLogical(settings.logicalW, settings.logicalH, quiet: true)
+        }
+
+        injector = InputInjector(displayID: displayID)
+        pipeline = Pipeline(displayID: displayID)
+
+        // If a client is already connected, restart streaming immediately.
+        if server.hasClient {
+            startPipelineAndAck()
+        }
+    }
+
+    private func positionRightOfMain() {
+        var config: CGDisplayConfigRef?
+        if CGBeginDisplayConfiguration(&config) == CGError.success {
+            let mainBounds = CGDisplayBounds(CGMainDisplayID())
+            CGConfigureDisplayOrigin(config, displayID, Int32(mainBounds.maxX), Int32(mainBounds.minY))
+            _ = CGCompleteDisplayConfiguration(config, .permanently)
+        }
+    }
+
+    /// Selects the ladder mode closest to the requested logical size.
+    func applyLogical(_ w: Int, _ h: Int, quiet: Bool = false) {
+        guard settings.mode == .extend, displayID != 0 else { return }
+        Thread.sleep(forTimeInterval: 0.3) // let WindowServer settle after creation
+        guard let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] else { return }
+        let want = modes.min {
+            let d1 = abs($0.width - w) + abs($0.height - h)
+            let d2 = abs($1.width - w) + abs($1.height - h)
+            return d1 == d2 ? $0.refreshRate > $1.refreshRate : d1 < d2
+        }
+        guard let want else { return }
+        let err = CGDisplaySetDisplayMode(displayID, want, nil)
+        if !quiet {
+            print("[ds] logical \(want.width)x\(want.height): err=\(err.rawValue)")
+        }
+        settings.logicalW = want.width
+        settings.logicalH = want.height
+    }
+
+    func setMode(_ mode: Mode) {
+        guard mode != settings.mode else { return }
+        print("[ds] switch mode -> \(mode.rawValue)")
+        settings.mode = mode
+        applyMode()
+        sendAck()
+    }
+
+    func setLogical(w: Int, h: Int) {
+        guard settings.mode == .extend else { return }
+        applyLogical(w, h)
+        pipeline?.kickAfterReconnect()
+        sendAck()
+    }
+
+    func setFps(_ fps: Int) {
+        guard fps != settings.fps else { return }
+        settings.fps = fps
+        pipeline?.reset()
+        if server.hasClient { startPipelineAndAck() }
+    }
+
+    // MARK: server wiring
+
+    private func wireServer() {
+        server.onControl = { [weak self] hello in
+            guard let self else { return }
+            // remote commands from the tablet (settings panel)
+            if let cmd = hello["cmd"] as? String {
+                self.handleCommand(cmd, hello)
+                return
+            }
+            guard (hello["magic"] as? String) == "DSXP" else { return }
+            let clientW = hello["width"] as? Int ?? self.settings.panelW
+            let clientH = hello["height"] as? Int ?? self.settings.panelH
+            let clientHz = hello["maxRefresh"] as? Int ?? 144
+            print("[ds] tablet hello: \(clientW)x\(clientH), panel \(clientHz) Hz")
+            self.injector?.refreshBounds()
+            self.startPipelineAndAck()
+        }
+        server.onInput = { [weak self] json in
+            self?.injector?.handle(json)
+        }
+        server.onClientConnected = { [weak self] in
+            self?.injector?.refreshBounds()
+        }
+        server.onClientDisconnected = {
+            print("[ds] client disconnected; display stays, pipeline idles")
+        }
+    }
+
+    private func handleCommand(_ cmd: String, _ json: [String: Any]) {
+        switch cmd {
+        case "setMode":
+            if let m = (json["mode"] as? String).flatMap(Mode.init(rawValue:)) {
+                setMode(m)
+            }
+        case "setLogical":
+            if let w = json["w"] as? Int, let h = json["h"] as? Int {
+                setLogical(w: w, h: h)
+            }
+        case "setFps":
+            if let f = json["fps"] as? Int {
+                setFps(f)
+            }
+        default:
+            break
+        }
+    }
+
+    private func startPipelineAndAck() {
+        guard let pipeline else { return }
+        pipeline.start(server: server, width: streamW, height: streamH,
+                       fps: settings.fps,
+                       bitrateBps: settings.bitrateMbps * 1_000_000)
+        pipeline.kickAfterReconnect()
+        sendAck()
+    }
+
+    private func sendAck() {
+        server.sendControl([
+            "ok": true,
+            "width": streamW,
+            "height": streamH,
+            "fps": settings.fps,
+            "bitrate": settings.bitrateMbps * 1_000_000,
+            "codec": "hevc",
+            "mirror": settings.mode == .mirror,
+            "logicalW": settings.logicalW,
+            "logicalH": settings.logicalH,
+            "audio": "pcm16",
+            "audioRate": 48000,
+            "audioChannels": 2,
+            "displayID": Int(displayID),
+        ])
+    }
+
+    private func sendStats() {
+        guard server.hasClient else { return }
+        server.sendStats([
+            "hostFps": pipeline?.currentFps ?? 0,
+            "mode": settings.mode.rawValue,
+            "logical": "\(settings.logicalW)x\(settings.logicalH)",
+            "bitrateMbps": settings.bitrateMbps,
+        ])
+    }
+
+    private func setupSignalHandler() {
+        let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        signal(SIGINT, SIG_IGN)
+        source.setEventHandler { [weak self] in
+            print("\n[ds] shutting down…")
+            self?.pipeline?.reset()
+            if self?.virtualCreated == true { vd_release_display() }
+            exit(0)
+        }
+        source.resume()
+    }
 }
 
-server.onInput = { json in
-    injector.handle(json)
-}
-server.onClientDisconnected = {
-    print("[ds] client disconnected; display stays, pipeline idles")
-}
+// MARK: - USB autopilot
 
-do {
-    try server.start(port: port)
-} catch {
-    FileHandle.standardError.write("FATAL: cannot listen on port \(port): \(error)\n".data(using: .utf8)!)
-    vd_release_display()
-    exit(1)
-}
-
-// 5. USB autopilot: when a tablet is plugged in and nobody is connected,
-// set up `adb reverse` and launch the client automatically.
 final class UsbWatchdog {
     private let adbPath: String
     private let server: FrameServer
+    private let port: UInt16
     private var lastLaunch = Date.distantPast
 
-    init?(server: FrameServer) {
+    init?(server: FrameServer, port: UInt16) {
         let candidates = ["/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb"]
         guard let adb = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             print("[usb] adb not found; automatic USB flow disabled")
@@ -303,6 +444,7 @@ final class UsbWatchdog {
         }
         adbPath = adb
         self.server = server
+        self.port = port
     }
 
     func run(_ arguments: [String]) -> String? {
@@ -330,22 +472,231 @@ final class UsbWatchdog {
     }
 }
 
-if let usb = UsbWatchdog(server: server) {
-    let usbTimer = Timer(timeInterval: 2, repeats: true) { _ in usb.tick() }
-    RunLoop.main.add(usbTimer, forMode: .common)
+// MARK: - Menu bar UI
+
+final class MenuBar: NSObject, NSMenuDelegate {
+    private let host: HostApp
+    private var statusItem: NSStatusItem!
+    private var uiTimer: Timer?
+    private var statusLine: NSMenuItem!
+
+    init(host: HostApp) {
+        self.host = host
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusLine = NSMenuItem(title: "…", action: nil, keyEquivalent: "")
+        super.init()
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.title = "🖥"
+
+        let menu = NSMenu()
+
+        statusLine.isEnabled = false
+        menu.addItem(statusLine)
+        menu.addItem(.separator())
+
+        let modeMenu = NSMenu(title: "Режим")
+        for (label, mode) in [("Расширение (второй экран)", HostApp.Mode.extend),
+                              ("Зеркало (повтор экрана retina)", HostApp.Mode.mirror)] {
+            let item = NSMenuItem(title: label, action: #selector(modeSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            modeMenu.addItem(item)
+        }
+        let modeItem = NSMenuItem(title: "Режим", action: nil, keyEquivalent: "")
+        modeItem.submenu = modeMenu
+        menu.addItem(modeItem)
+
+        let logicalMenu = NSMenu(title: "Размер (extend)")
+        for (w, h) in [(1472, 920), (1920, 1200), (2944, 1840)] {
+            let item = NSMenuItem(title: "\(w)×\(h)", action: #selector(logicalSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = "\(w)x\(h)"
+            logicalMenu.addItem(item)
+        }
+        let logicalItem = NSMenuItem(title: "Размер (extend)", action: nil, keyEquivalent: "")
+        logicalItem.submenu = logicalMenu
+        menu.addItem(logicalItem)
+
+        let fpsMenu = NSMenu(title: "Кадры/с")
+        for f in [120, 90, 60] {
+            let item = NSMenuItem(title: "\(f) fps", action: #selector(fpsSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = f
+            fpsMenu.addItem(item)
+        }
+        let fpsItem = NSMenuItem(title: "Кадры/с", action: nil, keyEquivalent: "")
+        fpsItem.submenu = fpsMenu
+        menu.addItem(fpsItem)
+
+        let autostart = NSMenuItem(title: "Автостарт при входе", action: #selector(toggleAutostart(_:)), keyEquivalent: "")
+        autostart.target = self
+        autostart.state = LaunchAgent.isInstalled ? .on : .off
+        menu.addItem(autostart)
+
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Выйти", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        menu.delegate = self
+        statusItem.menu = menu
+
+        uiTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            self?.refreshStatus()
+        }
+        RunLoop.main.add(uiTimer!, forMode: .common)
+        DispatchQueue.main.async { [weak self] in self?.refreshStatus() }
+    }
+
+    private func refreshStatus() {
+        if host.server.hasClient {
+            statusLine.title = String(format: "онлайн • %@ • %.0f fps", host.settings.mode.rawValue, host.pipeline?.currentFps ?? 0)
+            statusItem.button?.title = "🖥●"
+        } else {
+            statusLine.title = "ожидание планшета (автостарт: \(LaunchAgent.isInstalled ? "вкл" : "выкл"))"
+            statusItem.button?.title = "🖥"
+        }
+    }
+
+    @objc private func modeSelected(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let m = HostApp.Mode(rawValue: raw) {
+            host.setMode(m)
+        }
+    }
+
+    @objc private func logicalSelected(_ sender: NSMenuItem) {
+        if let s = sender.representedObject as? String {
+            let parts = s.split(separator: "x")
+            if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                host.setLogical(w: w, h: h)
+            }
+        }
+    }
+
+    @objc private func fpsSelected(_ sender: NSMenuItem) {
+        if let f = sender.representedObject as? Int {
+            host.setFps(f)
+        }
+    }
+
+    @objc private func toggleAutostart(_ sender: NSMenuItem) {
+        if LaunchAgent.isInstalled {
+            LaunchAgent.uninstall()
+        } else {
+            LaunchAgent.install()
+        }
+        sender.state = LaunchAgent.isInstalled ? .on : .off
+        refreshStatus()
+    }
+
+    @objc private func quit() {
+        print("[ds] quit from menu")
+        exit(0)
+    }
 }
 
-// 6. Clean shutdown on Ctrl-C (removes the virtual display).
-let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-signal(SIGINT, SIG_IGN)
-signalSource.setEventHandler {
-    print("\n[ds] shutting down…")
-    pipeline.capturer.stop()
-    pipeline.encoder.stop()
-    vd_release_display()
-    exit(0)
+extension MenuBar {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        for item in menu.items {
+            guard let sub = item.submenu else { continue }
+            for subItem in sub.items {
+                switch item.title {
+                case "Режим":
+                    subItem.state = (subItem.representedObject as? String) == host.settings.mode.rawValue ? .on : .off
+                case "Размер (extend)":
+                    subItem.state = (subItem.representedObject as? String) == "\(host.settings.logicalW)x\(host.settings.logicalH)" ? .on : .off
+                case "Кадры/с":
+                    subItem.state = (subItem.representedObject as? Int) == host.settings.fps ? .on : .off
+                default:
+                    break
+                }
+            }
+        }
+    }
 }
-signalSource.resume()
 
-print("[ds] ready. Connect the tablet (USB: adb reverse tcp:\(port) tcp:\(port); Wi-Fi: this Mac's IP).")
-RunLoop.main.run()
+// MARK: - LaunchAgent
+
+enum LaunchAgent {
+    static var plistPath: String {
+        "\(NSHomeDirectory())/Library/LaunchAgents/com.oleg.dualscreen.host.plist"
+    }
+    static var isInstalled: Bool {
+        FileManager.default.fileExists(atPath: plistPath)
+    }
+
+    private static var binaryPath: String {
+        var path = CommandLine.arguments[0]
+        if !path.hasPrefix("/") {
+            path = FileManager.default.currentDirectoryPath + "/" + path
+        }
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    static func install() {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <plist version="1.0">
+        <dict>
+            <key>Label</key><string>com.oleg.dualscreen.host</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(binaryPath)</string>
+            </array>
+            <key>RunAtLoad</key><true/>
+            <key>KeepAlive</key><true/>
+        </dict>
+        </plist>
+        """
+        try? plist.write(toFile: plistPath, atomically: true, encoding: .utf8)
+        run("/bin/launchctl", ["unload", plistPath])
+        run("/bin/launchctl", ["load", plistPath])
+        print("[ds] LaunchAgent installed: \(plistPath)")
+    }
+
+    static func uninstall() {
+        run("/bin/launchctl", ["unload", plistPath])
+        try? FileManager.default.removeItem(atPath: plistPath)
+        print("[ds] LaunchAgent removed")
+    }
+
+    @discardableResult
+    private static func run(_ path: String, _ arguments: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = arguments
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit(); return true } catch { return false }
+    }
+}
+
+// MARK: - entry point
+
+var settings = HostApp.Settings(
+    mode: args.contains("--mirror") ? .mirror : .extend,
+    logicalW: 1472,
+    logicalH: 920,
+    panelW: Int(argValue("--width", "2944"))!,
+    panelH: Int(argValue("--height", "1840"))!,
+    fps: Int(argValue("--fps", "120"))!,
+    bitrateMbps: Int(argValue("--bitrate", "80"))!,
+    port: UInt16(argValue("--port", "7381"))!,
+    hidpi: !args.contains("--no-hidpi")
+)
+
+let logicalArg = argValue("--logical", "")
+if !logicalArg.isEmpty {
+    let parts = logicalArg.split(whereSeparator: { $0 == "x" || $0 == "X" })
+    if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+        settings.logicalW = w
+        settings.logicalH = h
+    }
+}
+
+print("[ds] DualScreenHost starting: mode=\(settings.mode.rawValue) panel=\(settings.panelW)x\(settings.panelH), \(settings.fps)fps, \(settings.bitrateMbps) Mbps, port \(settings.port)")
+let hostApp = HostApp(settings: settings)
+hostApp.run()
