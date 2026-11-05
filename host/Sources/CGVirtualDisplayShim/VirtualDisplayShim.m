@@ -42,9 +42,9 @@ uint32_t vd_create_display(uint32_t pixelW, uint32_t pixelH,
     if (_vd != nil) return 0;
 
     CGVirtualDisplayDescriptor *descriptor = [[CGVirtualDisplayDescriptor alloc] init];
-    // ~110 PPI so the reported physical size looks like a real panel; this
-    // makes macOS default to the native mode instead of a scaled one.
-    double ppi = 110.0;
+    // High PPI (laptop-class pixel density) so macOS synthesizes HiDPI @2x
+    // display modes; at low PPI it assumes 1x is enough.
+    double ppi = 220.0;
     descriptor.sizeInMillimeters = CGSizeMake(25.4 * pixelW / ppi, 25.4 * pixelH / ppi);
     descriptor.maxPixelsWide = pixelW;   // must match the top mode exactly
     descriptor.maxPixelsHigh = pixelH;
@@ -64,26 +64,24 @@ uint32_t vd_create_display(uint32_t pixelW, uint32_t pixelH,
     settings.hiDPI = hiDPI ? 1 : 0;
 
     NSMutableArray *modes = [NSMutableArray array];
-    // Full-resolution modes first (first entry becomes the active mode).
-    for (size_t i = 0; i < rateCount; i++) {
-        [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:pixelW height:pixelH refreshRate:rates[i]]];
-    }
-    // Half-resolution (HiDPI "looks like") ladder.
-    if (pixelW / 2 >= 640 && pixelH / 2 >= 480) {
+    // force-hidpi technique: with hiDPI=1 the compositor treats the declared
+    // mode size as POINTS and renders with a 2x pixel backing store, as long
+    // as maxPixels == mode * 2 and the mode list stays simple (full-res
+    // extra modes break the @2x selection).
+    //   hiDPI:     mode 1472x920 (points) -> 2944x1840 pixels
+    //   !hiDPI:    mode 2944x1840 -> 2944x1840 pixels (1:1)
+    if (hiDPI) {
         for (size_t i = 0; i < rateCount; i++) {
             [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:pixelW / 2 height:pixelH / 2 refreshRate:rates[i]]];
         }
-    }
-    // A couple of standard-ish sizes so macOS heuristics read this as a
-    // computer monitor, not a TV (avoids the "mirror by default" picker).
-    const CGSize stdSizes[] = { CGSizeMake(2560, 1600) };
-    for (size_t i = 0; i < sizeof(stdSizes) / sizeof(stdSizes[0]); i++) {
-        CGSize s = stdSizes[i];
-        if (s.width < pixelW && s.height < pixelH) {
-            [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:(unsigned int)s.width height:(unsigned int)s.height refreshRate:rates[0]]];
-            [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:(unsigned int)s.width height:(unsigned int)s.height refreshRate:60.0]];
+    } else {
+        for (size_t i = 0; i < rateCount; i++) {
+            [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:pixelW height:pixelH refreshRate:rates[i]]];
         }
     }
+    // (No extra "standard" sizes: a clean list is required for the @2x
+    // selection; the extend-vs-mirror prompt is handled by the unmirror
+    // guard in main.swift.)
     settings.modes = modes;
 
     BOOL ok = [display applySettings:settings];

@@ -2,13 +2,19 @@ package com.oleg.dualscreen
 
 import android.annotation.SuppressLint
 import android.graphics.Point
+import android.graphics.Typeface
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Display
+import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -25,10 +31,13 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     private lateinit var statusText: TextView
     private lateinit var addressEdit: EditText
     private lateinit var hzButton: Button
+    private lateinit var keyboardButton: Button
+    private lateinit var kbBuffer: EditText
 
     private var connection: DsxpConnection? = null
     private var decoder: VideoDecoder? = null
     private var streaming = false
+    private var everConnected = false
 
     private val hzOptions = intArrayOf(144, 120, 90, 60)
     private var hzIndex = 0
@@ -39,6 +48,12 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     private var touching = false
     private var twoFinger = false
     private var lastScroll = PointF0()
+    private var downAt = 0L
+    private var downX = 0f
+    private var downY = 0f
+    private var movedFar = false
+    private var twoFingerAt = 0L
+    private var twoFingerMoved = false
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,15 +65,14 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         root.addView(surfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+        // --- startup controls ---
         controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        statusText = TextView(this).apply { text = "DualScreen — подключение к Mac" }
         addressEdit = EditText(this).apply {
             hint = "host:port (127.0.0.1:7381 по USB)"
-            setText("127.0.0.1:7381")
+            setText(getSharedPreferences("ds", MODE_PRIVATE).getString("addr", "127.0.0.1:7381"))
         }
         val connectButton = Button(this).apply { text = "Подключить" }
         hzButton = Button(this).apply { text = hzLabel() }
-        controls.addView(statusText)
         controls.addView(addressEdit)
         controls.addView(connectButton)
         controls.addView(hzButton)
@@ -66,6 +80,62 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         controls.setPadding(pad, pad * 2, pad, pad)
         root.addView(controls, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+
+        // --- streaming overlays ---
+        statusText = TextView(this).apply {
+            text = "DualScreen"
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 13f
+            typeface = Typeface.MONOSPACE
+        }
+        root.addView(statusText, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START).apply {
+            leftMargin = pad; topMargin = pad / 2
+        })
+
+        keyboardButton = Button(this).apply {
+            text = "⌨"
+            alpha = 0.35f
+            setOnClickListener { toggleKeyboard() }
+        }
+        root.addView(keyboardButton, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END).apply {
+            rightMargin = pad; topMargin = 0
+        })
+
+        // invisible input that captures the soft keyboard
+        kbBuffer = EditText(this).apply {
+            alpha = 0f
+            layoutParams = FrameLayout.LayoutParams(1, 1, Gravity.BOTTOM or Gravity.START)
+            addTextChangedListener(object : TextWatcher {
+                var before = ""
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { before = s?.toString() ?: "" }
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    val now = s?.toString() ?: return
+                    if (now.length > before.length) {
+                        val added = now.substring(before.length)
+                        if (added.isNotEmpty()) sendKeyChar(added)
+                    } else if (now.length < before.length) {
+                        repeat(before.length - now.length) { sendKeySpecial("backspace") }
+                    }
+                    if (now.length > 4) s?.delete(0, now.length - 4)
+                }
+            })
+            setOnKeyListener { _, keyCode, event ->
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    when (keyCode) {
+                        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> { sendKeySpecial("enter"); true }
+                        KeyEvent.KEYCODE_DEL -> { sendKeySpecial("backspace"); true }
+                        else -> false
+                    }
+                } else false
+            }
+        }
+        root.addView(kbBuffer)
+
         setContentView(root)
 
         connectButton.setOnClickListener { connect() }
@@ -101,16 +171,35 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         val addr = addressEdit.text.toString().trim().split(":")
         val host = addr.getOrNull(0) ?: return
         val port = addr.getOrNull(1)?.toIntOrNull() ?: 7381
+        getSharedPreferences("ds", MODE_PRIVATE).edit()
+            .putString("addr", "$host:$port").apply()
 
         val display = display ?: return
         val real = Point()
         display.getRealSize(real)
         val refresh = refreshFor(hzOptions[hzIndex], display)
 
-        statusText.text = "Подключение к $host:$port…"
+        everConnected = false
+        statusText.text = "подключение к $host:$port…"
+        connection?.close()
         connection = DsxpConnection(host, port, this).also {
             it.connect(real.x, real.y, refresh)
         }
+    }
+
+    private fun sendKeyChar(ch: String) {
+        connection?.sendInput(JSONObject().put("t", "key").put("ch", ch))
+    }
+
+    private fun sendKeySpecial(name: String) {
+        connection?.sendInput(JSONObject().put("t", "key").put("special", name))
+    }
+
+    private fun toggleKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        kbBuffer.requestFocus()
+        imm.showSoftInput(kbBuffer, InputMethodManager.SHOW_IMPLICIT)
+        keyboardButton.alpha = if (keyboardButton.alpha < 0.9f) 0.9f else 0.35f
     }
 
     // ---------------- connection callbacks ----------------
@@ -124,32 +213,27 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
             pendingWidth = config.optInt("width", 2944)
             pendingHeight = config.optInt("height", 1840)
             val fps = config.optInt("fps", 120)
-            statusText.text = "Поток: ${pendingWidth}×${pendingHeight} @ $fps fps"
-            controls.visibility = View.GONE
+            everConnected = true
             streaming = true
+            controls.visibility = View.GONE
+            statusText.text = "онлайн ${pendingWidth}×${pendingHeight} @ $fps fps"
             hideSystemUi()
         }
     }
 
     override fun onVideoFrame(annexB: ByteArray, isKeyframeHint: Boolean) {
         if (!streaming) return
-        android.util.Log.d("DSXP", "frame ${annexB.size}B")
         var d = decoder
         if (d == null) {
             d = VideoDecoder(surfaceView.holder.surface, pendingWidth, pendingHeight)
             decoder = d
         }
         if (!d.started) {
-            val key = d.isKeyframe(annexB)
-            android.util.Log.d("DSXP", "waiting keyframe, isKey=$key")
-            if (key) {
+            if (d.isKeyframe(annexB)) {
                 if (!d.startFromKeyframe(annexB)) {
-                    android.util.Log.e("DSXP", "decoder start failed: ${d.lastError}")
                     runOnUiThread {
-                        statusText.text = "Ошибка декодера: ${d.lastError}"
+                        statusText.text = "ошибка декодера: ${d.lastError}"
                     }
-                } else {
-                    android.util.Log.d("DSXP", "decoder started")
                 }
             }
             return
@@ -161,11 +245,14 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
 
     override fun onDisconnected(reason: String?) {
         runOnUiThread {
-            streaming = false
-            decoder?.stop()
-            decoder = null
-            controls.visibility = View.VISIBLE
-            statusText.text = if (reason != null) "Отключено: $reason" else "Отключено"
+            if (everConnected) {
+                // keep streaming UI; the connection retries automatically
+                statusText.text = reason ?: "переподключение…"
+                decoder?.stop()
+                decoder = null
+            } else {
+                statusText.text = reason?.let { "нет связи: $it" } ?: "нет связи"
+            }
         }
     }
 
@@ -188,24 +275,32 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         val y = (event.y / h).coerceIn(0f, 1f).toDouble()
 
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                if (event.pointerCount >= 2) {
+            MotionEvent.ACTION_DOWN -> {
+                touching = true
+                movedFar = false
+                downAt = System.currentTimeMillis()
+                downX = event.x; downY = event.y
+                send("t" to "down", "x" to x, "y" to y)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount == 2) {
                     twoFinger = true
+                    twoFingerAt = System.currentTimeMillis()
+                    twoFingerMoved = false
                     if (touching) {
                         send("t" to "up", "x" to x, "y" to y)
                         touching = false
                     }
                     lastScroll.set(event)
-                } else {
-                    touching = true
-                    send("t" to "down", "x" to x, "y" to y)
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (abs(event.x - downX) > 18 || abs(event.y - downY) > 18) movedFar = true
                 if (twoFinger && event.pointerCount >= 2) {
                     val dx = event.x - lastScroll.x
                     val dy = event.y - lastScroll.y
                     if (abs(dx) > 4 || abs(dy) > 4) {
+                        twoFingerMoved = true
                         send("t" to "scroll", "dx" to (dx / 24).toDouble(), "dy" to (dy / 24).toDouble())
                         lastScroll.set(event)
                     }
@@ -215,12 +310,26 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
                     send("t" to "move", "x" to x, "y" to y)
                 }
             }
-            MotionEvent.ACTION_UP -> {
-                if (touching) send("t" to "up", "x" to x, "y" to y)
-                touching = false
+            MotionEvent.ACTION_POINTER_UP -> {
+                // two-finger tap (no scroll, quick) = right click
+                if (twoFinger && !twoFingerMoved &&
+                    System.currentTimeMillis() - twoFingerAt < 300) {
+                    send("t" to "right", "x" to x, "y" to y)
+                }
                 twoFinger = false
             }
-            MotionEvent.ACTION_POINTER_UP -> {
+            MotionEvent.ACTION_UP -> {
+                if (touching) {
+                    val held = System.currentTimeMillis() - downAt
+                    if (!movedFar && held > 550) {
+                        // long press = right click
+                        send("t" to "up", "x" to x, "y" to y)
+                        send("t" to "right", "x" to x, "y" to y)
+                    } else {
+                        send("t" to "up", "x" to x, "y" to y)
+                    }
+                }
+                touching = false
                 twoFinger = false
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -236,7 +345,6 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
 
     private fun refreshFor(targetHz: Int, display: Display): Int {
         val modes = display.supportedModes
-        // prefer the mode matching target refresh and panel resolution
         val best = modes.filter { it.refreshRate >= targetHz - 2 && it.refreshRate <= targetHz + 20 }
             .minByOrNull { abs(it.refreshRate - targetHz) }
             ?: modes.maxByOrNull { it.refreshRate }

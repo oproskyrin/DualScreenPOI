@@ -39,7 +39,7 @@ TCP, фрейм: `[u8 type][u32 BE length][payload]`
 
 ### Mac-хост
 
-Требования: macOS 13+, Apple Silicon, Command Line Tools (`xcode-select --install`).
+Требования: macOS 13+, Apple Silicon, Command Line Tools (`xcode-select --install`), `adb` (`brew install android-platform-tools`).
 
 ```bash
 cd host
@@ -51,12 +51,25 @@ swift build -c release
 При первом запуске macOS запросит «Запись экрана» — разрешить
 (Системные настройки → Конфиденциальность и безопасность → Запись экрана).
 
+**USB-автопилот**: если `adb` установлен и планшет воткнут с включённой
+отладкой, хост сам делает `adb reverse` и запускает приложение — воткнул
+кабель, через пару секунд второй экран работает. Ручной режим для Wi-Fi:
+в приложении указать IP мака (`ipconfig getifaddr en0`).
+
+**Масштаб**: по умолчанию `--hidpi` = логический размер 1472×920 (элементы
+нормальные). `--no-hidpi` = нативные 2944×1840 1:1 (мелко, но максимум места
+и пиксель-в-пиксель).
+
 ### Android-клиент
 
 ```bash
-cd android && ./gradlew assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+cd android && ./gradlew assembleRelease
+adb install app/build/outputs/apk/release/app-release.apk
 ```
+
+Жесты: тап/драг — курсор и клики; два пальца — скролл; тап двумя пальцами
+или долгое нажатие — правый клик; кнопка ⌨ — клавиатура Mac (ввод текста,
+backspace/enter). Переподключение — автоматическое.
 
 ### Подключение
 

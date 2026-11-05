@@ -21,10 +21,13 @@ let fps = Int(argValue("--fps", "120"))!
 let bitrateMbps = Int(argValue("--bitrate", "80"))!
 let port = UInt16(argValue("--port", "7381"))!
 let hidpi = args.contains("--no-hidpi") ? false : true
+// 1 = UI в нативных пикселях (мелко, максимум места),
+// 2 = Retina @2x: "looks like" 1472×920, текст резкий (по умолчанию)
+let scale = Int(argValue("--scale", "2"))!
 // First rate is the active display mode (max first), rest are selectable.
 let rates: [Double] = [144, 120, 90, 60]
 
-print("[ds] DualScreenHost starting: \(width)x\(height)@\(fps)fps, \(bitrateMbps) Mbps, port \(port), hidpi=\(hidpi)")
+print("[ds] DualScreenHost starting: \(width)x\(height)@\(fps)fps, \(bitrateMbps) Mbps, port \(port), hidpi=\(hidpi), scale=\(scale)")
 
 // 1. Screen Recording permission (TCC). Prompts on first run.
 if !CGPreflightScreenCaptureAccess() {
@@ -46,18 +49,44 @@ guard displayID != 0 else {
 }
 print("[ds] virtual display created: id=\(displayID)")
 
-// 3. Force "extend" if macOS auto-mirrored the new display.
-if CGDisplayIsInMirrorSet(displayID) != 0 {
+// 3. Position the virtual display right of the main display with aligned
+// top edge — also forces "extend" if macOS auto-mirrored the new display.
+do {
     var config: CGDisplayConfigRef?
     if CGBeginDisplayConfiguration(&config) == CGError.success {
         let mainBounds = CGDisplayBounds(CGMainDisplayID())
-        CGConfigureDisplayOrigin(config, displayID, Int32(mainBounds.maxX) + 1, 0)
+        CGConfigureDisplayOrigin(config, displayID, Int32(mainBounds.maxX), Int32(mainBounds.minY))
         _ = CGCompleteDisplayConfiguration(config, .permanently)
-        print("[ds] unmirrored: placed to the right of the main display")
+        print("[ds] positioned at (\(Int(mainBounds.maxX)), \(Int(mainBounds.minY))) — right of main")
+    }
+    if CGDisplayIsInMirrorSet(displayID) != 0 {
+        print("[ds] warning: still in mirror set")
     }
 }
 
 let injector = InputInjector(displayID: displayID)
+
+// 3b. HiDPI: the shim declares half-size POINTS modes when hidpi is on.
+// macOS's synthesized ladder usually wins mode selection, so force our
+// declared mode; with hiDPI=1 the backing store should be 2x the points.
+if hidpi {
+    Thread.sleep(forTimeInterval: 0.5) // let WindowServer settle
+    if let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] {
+        print("[ds] active: \(CGDisplayBounds(displayID).width)x\(CGDisplayBounds(displayID).height) pts")
+        let want = modes.first {
+            $0.width == width / 2 && $0.height == height / 2 &&
+            abs($0.refreshRate - rates[0]) < 1.0
+        }
+        if let want {
+            let err = CGDisplaySetDisplayMode(displayID, want, nil)
+            let b = CGDisplayBounds(displayID)
+            print("[ds] setDisplayMode(\(width / 2)x\(height / 2)): err=\(err.rawValue), " +
+                  "bounds=\(Int(b.width))x\(Int(b.height)) pts")
+        } else {
+            print("[ds] half-res mode not found in ladder")
+        }
+    }
+}
 
 // 4. Capture + encode pipeline, started on first client hello.
 final class Pipeline {
@@ -70,6 +99,8 @@ final class Pipeline {
     private var fpsCount = 0
     private var dbgPackets = 0
     private var dbgKeysDumped = 0
+    private var forceKeyFrames = 0
+    private var lastRestart = Date.distantPast
 
     /// Walks Annex-B NALs and prints their HEVC types (32=VPS, 33=SPS, 34=PPS).
     func dumpNalTypes(_ data: Data) {
@@ -100,10 +131,31 @@ final class Pipeline {
         capturer.onFrame = { [weak self] buffer, _ in
             guard let self else { return }
             if self.encoderReady {
-                self.encoder.encode(frame: buffer)
+                let force = self.forceKeyFrames > 0
+                if force { self.forceKeyFrames -= 1 }
+                self.encoder.encode(frame: buffer, forceKeyframe: force)
             }
         }
     }
+
+    /// A (re)connected client needs fresh frames and an IDR: restart the
+    /// capture (guarantees a frame even for static content) and force
+    /// keyframes for the first few encoded packets.
+    func kickAfterReconnect() {
+        lock.lock(); defer { lock.unlock() }
+        guard started, encoderReady else { return }
+        guard Date().timeIntervalSince(lastRestart) > 1.0 else { return }
+        lastRestart = Date()
+        forceKeyFrames = 3
+        let capt = capturer
+        let w = self.captureW, h = self.captureH, f = self.captureFps
+        Task.detached {
+            capt.stop()
+            try? await capt.start(fps: f, pixelWidth: w, pixelHeight: h)
+        }
+    }
+
+    private var captureW = 0, captureH = 0, captureFps = 0
 
     func start(server: FrameServer, width: Int, height: Int, fps: Int, bitrateBps: Int) {
         lock.lock(); defer { lock.unlock() }
@@ -125,6 +177,7 @@ final class Pipeline {
         }
 
         let sem = DispatchSemaphore(value: 0)
+        captureW = width; captureH = height; captureFps = fps
         Task.detached { [weak self] in
             guard let self else { sem.signal(); return }
             do {
@@ -164,6 +217,7 @@ server.onControl = { hello in
 
     pipeline.start(server: server, width: width, height: height, fps: fps,
                    bitrateBps: bitrateMbps * 1_000_000)
+    pipeline.kickAfterReconnect()
     server.sendControl([
         "ok": true,
         "width": width,
@@ -191,7 +245,54 @@ do {
     exit(1)
 }
 
-// 5. Clean shutdown on Ctrl-C (removes the virtual display).
+// 5. USB autopilot: when a tablet is plugged in and nobody is connected,
+// set up `adb reverse` and launch the client automatically.
+final class UsbWatchdog {
+    private let adbPath: String
+    private let server: FrameServer
+    private var lastLaunch = Date.distantPast
+
+    init?(server: FrameServer) {
+        let candidates = ["/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb"]
+        guard let adb = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            print("[usb] adb not found; automatic USB flow disabled")
+            return nil
+        }
+        adbPath = adb
+        self.server = server
+    }
+
+    func run(_ arguments: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: adbPath)
+        p.arguments = arguments
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit() } catch { return nil }
+        guard p.terminationStatus == 0 else { return nil }
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+    }
+
+    func tick() {
+        guard !server.hasClient else { return }
+        guard Date().timeIntervalSince(lastLaunch) > 8 else { return }
+        guard let out = run(["devices"]),
+              out.contains("\tdevice") else { return } // authorized USB device present
+        lastLaunch = Date()
+        print("[usb] tablet on USB: wiring adb reverse + launching client")
+        _ = run(["reverse", "tcp:\(port)", "tcp:\(port)"])
+        _ = run(["shell", "am", "start", "-n", "com.oleg.dualscreen/.MainActivity",
+                 "--ez", "autoconnect", "true"])
+    }
+}
+
+if let usb = UsbWatchdog(server: server) {
+    let usbTimer = Timer(timeInterval: 2, repeats: true) { _ in usb.tick() }
+    RunLoop.main.add(usbTimer, forMode: .common)
+}
+
+// 6. Clean shutdown on Ctrl-C (removes the virtual display).
 let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 signal(SIGINT, SIG_IGN)
 signalSource.setEventHandler {

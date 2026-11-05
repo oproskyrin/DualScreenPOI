@@ -38,8 +38,53 @@ final class InputInjector {
             let dx = json["dx"] as? Double ?? 0
             let dy = json["dy"] as? Double ?? 0
             postScroll(dx: dx, dy: dy)
+        case "key":
+            if let ch = json["ch"] as? String, !ch.isEmpty {
+                postUnicode(ch)
+            } else if let special = json["special"] as? String {
+                postSpecialKey(special)
+            }
         default:
             break
+        }
+    }
+
+    // MARK: keyboard
+
+    private func postUnicode(_ string: String) {
+        let utf16 = Array(string.utf16)
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+        utf16.withUnsafeBufferPointer { buf in
+            for event in [down, up] {
+                event?.keyboardSetUnicodeString(stringLength: utf16.count,
+                                                unicodeString: buf.baseAddress)
+                event?.post(tap: .cghidEventTap)
+            }
+        }
+    }
+
+    /// macOS virtual key codes for the special keys the tablet sends.
+    private static let specialKeys: [String: (vkey: CGKeyCode, withShift: Bool)] = [
+        "backspace": (0x33, false),
+        "enter": (0x24, false),
+        "tab": (0x30, false),
+        "esc": (0x35, false),
+        "left": (0x7B, false),
+        "right": (0x7C, false),
+        "down": (0x7D, false),
+        "up": (0x7E, false),
+        "delete": (0x75, false),
+        "home": (0x73, false),
+        "end": (0x77, false),
+    ]
+
+    private func postSpecialKey(_ name: String) {
+        guard let key = Self.specialKeys[name] else { return }
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: nil, virtualKey: key.vkey, keyDown: down)
+            if key.withShift { e?.flags = .maskShift }
+            e?.post(tap: .cghidEventTap)
         }
     }
 
