@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+*.xcodeproj
+build/
+.gradle/
+local.properties
+*.apk
+*.aab
+.idea/
+captures/
+.externalNativeBuild
+.cxx
