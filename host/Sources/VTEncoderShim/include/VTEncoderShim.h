@@ -26,6 +26,9 @@ void *vtenc_create(uint32_t width, uint32_t height,
 int vtenc_encode(void *enc, CVPixelBufferRef pixelBuffer,
                  double ptsSeconds, int forceKeyframe);
 
+// Live bitrate change on an active session (no restart, no black flash).
+int vtenc_set_bitrate(void *enc, uint32_t bitrateBps);
+
 void vtenc_destroy(void *enc);
 
 #include <CoreMedia/CoreMedia.h>

@@ -31,6 +31,10 @@ class DsxpConnection(
     private val running = AtomicBoolean(false)
     @Volatile private var userClosed = false
     private val sendLock = Any()
+    // network writes must never happen on the main thread
+    // (NetworkOnMainThreadException) — touch handlers and the stats overlay
+    // both call send* from the UI thread
+    private val sendExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     fun connect(width: Int, height: Int, maxRefresh: Int) {
         if (!running.compareAndSet(false, true)) return
@@ -111,13 +115,17 @@ class DsxpConnection(
     fun sendStats(json: JSONObject) = sendFrame(0x03, json.toString().toByteArray())
 
     private fun sendFrame(type: Int, payload: ByteArray) {
-        synchronized(sendLock) {
-            val out = output ?: return
-            runCatching {
-                out.write(type)
-                out.writeInt(payload.size)
-                out.write(payload)
-                out.flush()
+        sendExecutor.execute {
+            synchronized(sendLock) {
+                val out = output ?: return@execute
+                try {
+                    out.write(type)
+                    out.writeInt(payload.size)
+                    out.write(payload)
+                    out.flush()
+                } catch (e: Exception) {
+                    android.util.Log.e("DSXP", "send type=$type failed: $e")
+                }
             }
         }
     }

@@ -160,6 +160,20 @@ int vtenc_encode(void *opaque, CVPixelBufferRef pix, double ptsSeconds, int forc
     return err == noErr ? 0 : (int)err;
 }
 
+int vtenc_set_bitrate(void *opaque, uint32_t bitrateBps) {
+    vtenc *enc = (vtenc *)opaque;
+    if (enc == NULL || enc->session == NULL) return -1;
+    OSStatus err = setNum(enc->session, kVTCompressionPropertyKey_AverageBitRate,
+                          numInt((int64_t)bitrateBps));
+    if (err != noErr) return (int)err;
+    // keep the CVBR ceiling in sync
+    CFNumberRef limNums[2] = {numInt(0), numInt((int64_t)bitrateBps * 3 / 2)};
+    CFArrayRef limits = CFArrayCreate(NULL, (const void **)limNums, 2, &kCFTypeArrayCallBacks);
+    VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_DataRateLimits, limits);
+    CFRelease(limits); CFRelease(limNums[0]); CFRelease(limNums[1]);
+    return 0;
+}
+
 void vtenc_destroy(void *opaque) {
     vtenc *enc = (vtenc *)opaque;
     if (enc == NULL) return;

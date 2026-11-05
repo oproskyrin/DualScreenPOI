@@ -42,6 +42,12 @@ final class VideoEncoder {
         _ = vtenc_encode(handle, frame, pts, forceKeyframe ? 1 : 0)
     }
 
+    /// Live bitrate change; takes effect on the next encoded frames.
+    func setBitrate(_ bps: Int) {
+        guard let handle else { return }
+        _ = vtenc_set_bitrate(handle, UInt32(bps))
+    }
+
     func stop() {
         if let handle { vtenc_destroy(handle) }
         handle = nil

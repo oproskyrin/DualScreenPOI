@@ -139,6 +139,13 @@ final class Pipeline {
         Task.detached { capt.stop() }
     }
 
+    /// Live bitrate change without touching the running pipeline.
+    func setBitrate(_ bps: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard encoderReady else { return }
+        encoder.setBitrate(bps)
+    }
+
     private func noteFrameSent() {
         fpsCount += 1
         let now = Date()
@@ -178,6 +185,12 @@ final class HostApp {
     private var injector: InputInjector?
     private(set) var pipeline: Pipeline?
     private let rates: [Double] = [144, 120, 90, 60]
+
+    // adaptive bitrate
+    private var maxBitrateBps = 0
+    private var currentBitrateBps = 0
+    private var goodWindows = 0
+    private var lastAdjust = Date.distantPast
 
     init(settings: Settings) {
         self.settings = settings
@@ -351,6 +364,9 @@ final class HostApp {
         server.onInput = { [weak self] json in
             self?.injector?.handle(json)
         }
+        server.onClientStats = { [weak self] stats in
+            self?.adaptBitrate(clientStats: stats)
+        }
         server.onClientConnected = { [weak self] in
             self?.injector?.refreshBounds()
         }
@@ -413,6 +429,49 @@ final class HostApp {
             "logical": "\(settings.logicalW)x\(settings.logicalH)",
             "bitrateMbps": settings.bitrateMbps,
         ])
+    }
+
+    // MARK: adaptive bitrate
+
+    /// AIMD-style control driven by end-to-end latency reported by the tablet:
+    /// cut hard when the pipe is congested (latency climbs = queues are full),
+    /// creep back up when it has been consistently healthy.
+    private func adaptBitrate(clientStats: [String: Any]) {
+        guard maxBitrateBps == 0 else { return adapt(clientStats: clientStats) }
+        maxBitrateBps = settings.bitrateMbps * 1_000_000
+        currentBitrateBps = maxBitrateBps
+    }
+
+    private func adapt(clientStats: [String: Any]) {
+        let now = Date()
+        guard now.timeIntervalSince(lastAdjust) >= 3 else { return }
+        guard let latency = clientStats["latencyMs"] as? Double else { return }
+
+        var next = currentBitrateBps
+        if latency > 60 {
+            next = Int(Double(currentBitrateBps) * 0.75)
+            goodWindows = 0
+        } else if latency > 40 {
+            next = Int(Double(currentBitrateBps) * 0.9)
+            goodWindows = 0
+        } else if latency < 30 {
+            goodWindows += 1
+            if goodWindows >= 3 {
+                next = min(Int(Double(currentBitrateBps) * 1.1), maxBitrateBps)
+                goodWindows = 0
+            }
+        } else {
+            goodWindows = 0
+        }
+
+        next = max(next, 8_000_000)
+        if next != currentBitrateBps {
+            currentBitrateBps = next
+            lastAdjust = now
+            settings.bitrateMbps = next / 1_000_000
+            pipeline?.setBitrate(next)
+            print(String(format: "[abr] latency %.0f ms -> %d Mbps", latency, next / 1_000_000))
+        }
     }
 
     private func setupSignalHandler() {

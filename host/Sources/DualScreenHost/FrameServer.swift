@@ -29,6 +29,8 @@ final class FrameServer {
     var onControl: (([String: Any]) -> Void)?
     /// JSON input events from the tablet.
     var onInput: (([String: Any]) -> Void)?
+    /// Periodic stats from the tablet (latency, decode fps).
+    var onClientStats: (([String: Any]) -> Void)?
     var onClientConnected: (() -> Void)?
     var onClientDisconnected: (() -> Void)?
 
@@ -116,7 +118,10 @@ final class FrameServer {
     }
 
     private func handleFrame(type: UInt8, payload: Data) {
-        guard let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { return }
+        guard let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            print("[server] unparseable frame type=\(type) len=\(payload.count)")
+            return
+        }
         switch type {
         case 0x00:
             clientHello = json
@@ -124,7 +129,7 @@ final class FrameServer {
         case 0x02:
             onInput?(json)
         case 0x03:
-            if let f = json["fps"] { print("[server] client stats: \(f) fps") }
+            onClientStats?(json)
         default:
             break
         }

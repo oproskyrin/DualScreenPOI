@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     private var streaming = false
     private var everConnected = false
     private val statsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var lastStatsSent = 0L
     private val statsUpdater = object : Runnable {
         override fun run() {
             if (streaming) {
@@ -53,9 +54,17 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
                 val fps = d?.fps ?: 0.0
                 val hostFps = lastHostStats?.optDouble("hostFps", 0.0) ?: 0.0
                 val mode = lastHostStats?.optString("mode") ?: config.optString("mirror").let { if (it == "true") "mirror" else "extend" }
+                val br = lastHostStats?.optInt("bitrateMbps", 0) ?: 0
                 statusText.text = String.format(
-                    "%s • %.0f мс • %.0f fps (хост %.0f)",
-                    if (mode == "mirror") "зеркало" else "расширение", lat, fps, hostFps)
+                    "%s • %.0f мс • %.0f fps • %d Мбит/с",
+                    if (mode == "mirror") "зеркало" else "расширение", lat, fps, br)
+                // feed the Mac's adaptive bitrate controller (every ~2s)
+                val now = System.currentTimeMillis()
+                if (now - lastStatsSent >= 2000) {
+                    lastStatsSent = now
+                    connection?.sendStats(
+                        JSONObject().put("latencyMs", lat).put("fps", fps))
+                }
                 statsHandler.postDelayed(this, 1000)
             }
         }
@@ -200,6 +209,34 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         }
     }
 
+    // ---------------- aspect-correct stream layout (letterbox) ----------------
+
+    /** Fits the SurfaceView to the stream's aspect ratio, centered. */
+    private fun relayoutStream(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        val root = surfaceView.parent as? FrameLayout ?: return
+        root.post {
+            val rw = root.width.toFloat()
+            val rh = root.height.toFloat()
+            if (rw <= 0 || rh <= 0) return@post
+            val scale = minOf(rw / w, rh / h)
+            val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
+            lp.width = (w * scale).toInt()
+            lp.height = (h * scale).toInt()
+            lp.gravity = Gravity.CENTER
+            surfaceView.layoutParams = lp
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // autopilot relaunch while we're the running instance: if the
+        // connection died while backgrounded, reconnect now
+        if (intent.getBooleanExtra("autoconnect", false) && !streaming) {
+            surfaceView.post { connect() }
+        }
+    }
+
     private fun hzLabel() = "Частота экрана: ${hzOptions[hzIndex]} Гц"
 
     // ---------------- mDNS discovery ----------------
@@ -292,9 +329,18 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
 
     override fun onAck(config: JSONObject) {
         runOnUiThread {
+            try {
+                onAckUi(config)
+            } catch (e: Exception) {
+                android.util.Log.e("DSXP", "onAck UI failed", e)
+            }
+        }
+    }
+
+    private fun onAckUi(config: JSONObject) {
             if (!config.optBoolean("ok")) {
                 statusText.text = "Mac отказал: $config"
-                return@runOnUiThread
+                return
             }
             // resolution changed (mode switch on the host): restart the decoder
             // from the next keyframe instead of trusting adaptive decode
@@ -308,6 +354,7 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
             this.config = config
             pendingWidth = newW
             pendingHeight = newH
+            relayoutStream(newW, newH)
             val fps = config.optInt("fps", 120)
             everConnected = true
             streaming = true
@@ -316,7 +363,6 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
             hideSystemUi()
             statsHandler.removeCallbacks(statsUpdater)
             statsHandler.post(statsUpdater)
-        }
     }
 
     override fun onVideoFrame(annexB: ByteArray, isKeyframeHint: Boolean) {
