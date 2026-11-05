@@ -169,3 +169,68 @@ void vtenc_destroy(void *opaque) {
     }
     free(enc);
 }
+
+// ---- audio: CMSampleBuffer -> interleaved PCM16 LE 48k stereo ----
+// (CMSampleBufferGetAudioBufferList is not exposed to Swift on macOS 27,
+// so the whole conversion lives here.)
+
+size_t vtaudio_pcm16_stereo(CMSampleBufferRef sb, int16_t *outBuf, size_t outCapacitySamples) {
+    if (sb == NULL) return 0;
+    CMFormatDescriptionRef fd = CMSampleBufferGetFormatDescription(sb);
+    if (fd == NULL) return 0;
+    const AudioStreamBasicDescription *asbd =
+        CMAudioFormatDescriptionGetStreamBasicDescription(fd);
+    if (asbd == NULL || (asbd->mFormatFlags & kAudioFormatFlagIsFloat) == 0) return 0;
+
+    CMItemCount frames = CMSampleBufferGetNumSamples(sb);
+    if (frames <= 0) return 0;
+    size_t need = (size_t)frames * 2; // interleaved stereo
+    if (need > outCapacitySamples) return 0;
+
+    size_t sizeRequired = 0;
+    CMBlockBufferRef blockBuffer = NULL;
+    if (CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sb, &sizeRequired, NULL, 0,
+            NULL, NULL, 0, &blockBuffer) != noErr ||
+        sizeRequired == 0 || blockBuffer == NULL) {
+        return 0;
+    }
+    uint8_t *ablMem = malloc(sizeRequired);
+    if (ablMem == NULL) {
+        CFRelease(blockBuffer);
+        return 0;
+    }
+    if (CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sb, NULL, (AudioBufferList *)ablMem, sizeRequired,
+            NULL, NULL, 0, NULL) != noErr) {
+        free(ablMem);
+        CFRelease(blockBuffer);
+        return 0;
+    }
+
+    const float *ch[2] = {NULL, NULL};
+    AudioBufferList *abl = (AudioBufferList *)ablMem;
+    int chanCount = 0;
+    for (int i = 0; i < abl->mNumberBuffers; i++) {
+        AudioBuffer *ab = &abl->mBuffers[i];
+        if (ab->mNumberChannels > 0 && ab->mData != NULL && chanCount < 2) {
+            ch[chanCount++] = (const float *)ab->mData;
+        }
+    }
+
+    size_t written = 0;
+    if (chanCount >= 1) {
+        const float *l = ch[0];
+        const float *r = (chanCount >= 2) ? ch[1] : ch[0];
+        for (CMItemCount i = 0; i < frames; i++) {
+            float ls = l[i], rs = r[i];
+            if (ls > 1.0f) ls = 1.0f; else if (ls < -1.0f) ls = -1.0f;
+            if (rs > 1.0f) rs = 1.0f; else if (rs < -1.0f) rs = -1.0f;
+            outBuf[written++] = (int16_t)(ls * 32766.0f);
+            outBuf[written++] = (int16_t)(rs * 32766.0f);
+        }
+    }
+    free(ablMem);
+    CFRelease(blockBuffer);
+    return written;
+}

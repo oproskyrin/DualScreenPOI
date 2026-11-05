@@ -21,6 +21,7 @@ class DsxpConnection(
     interface Listener {
         fun onAck(config: JSONObject)
         fun onVideoFrame(annexB: ByteArray, isKeyframeHint: Boolean)
+        fun onAudio(pcm: ByteArray) {}
         fun onStats(stats: JSONObject)
         fun onDisconnected(reason: String?)
     }
@@ -90,6 +91,7 @@ class DsxpConnection(
                     0x00 -> listener.onAck(JSONObject(String(payload)))
                     0x01 -> listener.onVideoFrame(payload, false)
                     0x03 -> runCatching { listener.onStats(JSONObject(String(payload))) }
+                    0x04 -> listener.onAudio(payload)
                 }
             }
             return true

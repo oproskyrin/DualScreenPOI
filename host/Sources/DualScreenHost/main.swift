@@ -176,6 +176,10 @@ final class Pipeline {
             self.noteFrameSent()
         }
 
+        capturer.onAudio = { [weak server] pcm in
+            server?.sendAudio(pcm)
+        }
+
         let sem = DispatchSemaphore(value: 0)
         captureW = width; captureH = height; captureFps = fps
         Task.detached { [weak self] in
@@ -225,6 +229,9 @@ server.onControl = { hello in
         "fps": fps,
         "bitrate": bitrateMbps * 1_000_000,
         "codec": "hevc",
+        "audio": "pcm16",
+        "audioRate": 48000,
+        "audioChannels": 2,
         "displayID": Int(displayID),
     ])
     injector.refreshBounds()

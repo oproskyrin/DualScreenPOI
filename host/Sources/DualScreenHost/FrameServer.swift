@@ -137,6 +137,11 @@ final class FrameServer {
         send(type: 0x01, payload: annexB)
     }
 
+    /// Raw PCM 16-bit LE 48kHz stereo chunk.
+    func sendAudio(_ pcm: Data) {
+        send(type: 0x04, payload: pcm)
+    }
+
     func sendStats(_ json: [String: Any]) {
         send(type: 0x03, payload: (try? JSONSerialization.data(withJSONObject: json)) ?? Data())
     }

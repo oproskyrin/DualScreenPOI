@@ -28,6 +28,13 @@ int vtenc_encode(void *enc, CVPixelBufferRef pixelBuffer,
 
 void vtenc_destroy(void *enc);
 
+#include <CoreMedia/CoreMedia.h>
+
+// Converts an SCK audio CMSampleBuffer (Float32, any channel layout) to
+// interleaved 16-bit LE stereo PCM. Returns the number of int16 samples
+// written, or 0 on failure / insufficient capacity.
+size_t vtaudio_pcm16_stereo(CMSampleBufferRef sb, int16_t *outBuf, size_t outCapacitySamples);
+
 #ifdef __cplusplus
 }
 #endif

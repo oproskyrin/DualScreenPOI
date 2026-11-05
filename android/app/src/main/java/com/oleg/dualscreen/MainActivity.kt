@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
 
     private var connection: DsxpConnection? = null
     private var decoder: VideoDecoder? = null
+    private val audioPlayer = AudioPlayer()
     private var streaming = false
     private var everConnected = false
 
@@ -216,7 +217,9 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
             everConnected = true
             streaming = true
             controls.visibility = View.GONE
-            statusText.text = "онлайн ${pendingWidth}×${pendingHeight} @ $fps fps"
+            statusText.text = "онлайн ${pendingWidth}×${pendingHeight} @ $fps fps" +
+                if (config.optBoolean("audio", false) || config.has("audio")) " +звук" else ""
+            if (config.optString("audio").isNotEmpty()) audioPlayer.start()
             hideSystemUi()
         }
     }
@@ -242,6 +245,10 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     }
 
     override fun onStats(stats: JSONObject) {}
+
+    override fun onAudio(pcm: ByteArray) {
+        audioPlayer.feed(pcm)
+    }
 
     override fun onDisconnected(reason: String?) {
         runOnUiThread {
@@ -379,6 +386,7 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     override fun onDestroy() {
         connection?.close()
         decoder?.stop()
+        audioPlayer.stop()
         super.onDestroy()
     }
 }

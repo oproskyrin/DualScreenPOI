@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos-host:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build DualScreenHost
+        run: swift build -c release --package-path host
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          cp host/.build/release/DualScreenHost .
+          tar -czf DualScreenHost-v${VERSION}-macos-arm64.tar.gz DualScreenHost
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-host
+          path: DualScreenHost-*.tar.gz
+
+  android-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+          gradle assembleRelease --no-daemon -q
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          cp android/app/build/outputs/apk/release/app-release.apk DualScreenClient-v${VERSION}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-client
+          path: DualScreenClient-*.apk
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos-host, android-client]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/macos-host/*.tar.gz \
+            dist/android-client/*.apk \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

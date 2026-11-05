@@ -2,6 +2,7 @@ import Foundation
 import ScreenCaptureKit
 import CoreVideo
 import CoreMedia
+import VTEncoderShim
 
 /// Captures a specific CGDirectDisplayID with ScreenCaptureKit at a fixed
 /// frame rate, delivering NV12 CVImageBuffers.
@@ -16,6 +17,8 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private var serial = 0
 
     var onFrame: ((CVImageBuffer, CMTime) -> Void)?
+    /// Raw 16-bit LE 48kHz stereo PCM chunks of system audio.
+    var onAudio: ((Data) -> Void)?
     var onError: ((Error) -> Void)?
 
     init(displayID: CGDirectDisplayID) {
@@ -50,10 +53,14 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.width = pixelWidth
         config.height = pixelHeight
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        config.capturesAudio = false
+        config.capturesAudio = true
+        config.sampleRate = 48_000
+        config.channelCount = 2
+        config.excludesCurrentProcessAudio = false
 
         let newStream = SCStream(filter: filter, configuration: config, delegate: self)
         try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "ds.capture", qos: .userInteractive))
+        try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "ds.audio", qos: .userInteractive))
         try await newStream.startCapture()
         stream = newStream
     }
@@ -68,10 +75,23 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen,
-              sampleBuffer.isValid,
-              let imageBuffer = sampleBuffer.imageBuffer else { return }
-        onFrame?(imageBuffer, sampleBuffer.presentationTimeStamp)
+        guard sampleBuffer.isValid else { return }
+        switch type {
+        case .screen:
+            guard let imageBuffer = sampleBuffer.imageBuffer else { return }
+            onFrame?(imageBuffer, sampleBuffer.presentationTimeStamp)
+        case .audio:
+            var samples = [Int16](repeating: 0, count: 8192)
+            let written = samples.withUnsafeMutableBufferPointer { buf in
+                vtaudio_pcm16_stereo(sampleBuffer, buf.baseAddress, buf.count)
+            }
+            guard written > 0 else { return }
+            samples.withUnsafeBytes { raw in
+                onAudio?(Data(raw.bindMemory(to: UInt8.self).prefix(written * 2)))
+            }
+        @unknown default:
+            break
+        }
     }
 
     // MARK: SCStreamDelegate
