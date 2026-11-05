@@ -9,27 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  macos-host:
+  release:
     runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build DualScreenHost
-        run: swift build -c release --package-path host
-
-      - name: Package
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          cp host/.build/release/DualScreenHost .
-          tar -czf DualScreenHost-v${VERSION}-macos-arm64.tar.gz DualScreenHost
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-host
-          path: DualScreenHost-*.tar.gz
-
-  android-client:
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -38,41 +19,44 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      # ---- Mac host ----
+      - name: Build DualScreenHost
+        run: swift build -c release --package-path host
+
+      - name: Package host
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          cp host/.build/release/DualScreenHost .
+          tar -czf DualScreenHost-v${VERSION}-macos-arm64.tar.gz DualScreenHost
+
+      # ---- Android client (same recipe as local builds) ----
+      - name: Install Android toolchain
+        run: |
+          brew install -q gradle --cask android-commandlinetools || brew install -q gradle
+          brew list --cask android-commandlinetools &>/dev/null || brew install -q --cask android-commandlinetools
+          export JAVA_HOME=${JAVA_HOME_17_X64:-$JAVA_HOME}
+          SDK=/opt/homebrew/share/android-commandlinetools
+          yes | $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK --licenses >/dev/null || true
+          $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK "platforms;android-35" "build-tools;35.0.0" "platform-tools" >/dev/null
+          echo "sdk.dir=$SDK" > android/local.properties
 
       - name: Build APK
         working-directory: android
-        run: |
-          echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          gradle assembleRelease --no-daemon -q
+        run: gradle assembleRelease --no-daemon -q
 
-      - name: Package
+      - name: Package APK
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           cp android/app/build/outputs/apk/release/app-release.apk DualScreenClient-v${VERSION}.apk
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-client
-          path: DualScreenClient-*.apk
-
-  github-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos-host, android-client]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-
+      # ---- GitHub Release (release assets bypass the artifact quota) ----
       - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            dist/macos-host/*.tar.gz \
-            dist/android-client/*.apk \
+            DualScreenHost-*.tar.gz \
+            DualScreenClient-*.apk \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes
