@@ -38,6 +38,9 @@ final class FrameServer {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        // Announce the host on the local network: Android client discovers
+        // "_dualscreen._tcp" and connects without typing the Mac's IP.
+        listener.service = NWListener.Service(name: "DualScreen", type: "_dualscreen._tcp")
         listener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             self.queue.async {

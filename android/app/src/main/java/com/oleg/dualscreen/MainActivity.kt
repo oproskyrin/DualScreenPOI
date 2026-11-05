@@ -1,8 +1,11 @@
 package com.oleg.dualscreen
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Point
 import android.graphics.Typeface
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -73,9 +76,14 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
             setText(getSharedPreferences("ds", MODE_PRIVATE).getString("addr", "127.0.0.1:7381"))
         }
         val connectButton = Button(this).apply { text = "Подключить" }
+        val findButton = Button(this).apply {
+            text = "Найти Mac (Wi-Fi)"
+            setOnClickListener { discoverMac() }
+        }
         hzButton = Button(this).apply { text = hzLabel() }
         controls.addView(addressEdit)
         controls.addView(connectButton)
+        controls.addView(findButton)
         controls.addView(hzButton)
         val pad = (resources.displayMetrics.density * 16).toInt()
         controls.setPadding(pad, pad * 2, pad, pad)
@@ -167,6 +175,57 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
     }
 
     private fun hzLabel() = "Частота экрана: ${hzOptions[hzIndex]} Гц"
+
+    // ---------------- mDNS discovery ----------------
+
+    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var nsdManager: NsdManager? = null
+
+    @SuppressLint("SetTextI18n")
+    private fun discoverMac() {
+        val nsd = getSystemService(Context.NSD_SERVICE) as NsdManager
+        nsdManager = nsd
+        statusText.text = "ищу Mac в сети…"
+
+        fun stopDiscovery() {
+            discoveryListener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
+            discoveryListener = null
+        }
+        stopDiscovery()
+
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) {}
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                runOnUiThread { statusText.text = "mDNS не запущен (код $errorCode)" }
+            }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                if (!serviceInfo.serviceType.contains("dualscreen")) return
+                runOnUiThread { statusText.text = "нашёл ${serviceInfo.serviceName}, подключаюсь…" }
+                nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                        runOnUiThread { statusText.text = "не разрешился сервис ($errorCode)" }
+                    }
+
+                    override fun onServiceResolved(info: NsdServiceInfo) {
+                        val host = info.host?.hostAddress ?: return
+                        val p = info.port
+                        runOnUiThread {
+                            stopDiscovery()
+                            addressEdit.setText("$host:$p")
+                            connect()
+                        }
+                    }
+                })
+            }
+
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+        }
+        discoveryListener = listener
+        runCatching { nsd.discoverServices("_dualscreen._tcp.", NsdManager.PROTOCOL_DNS_SD, listener) }
+    }
 
     private fun connect() {
         val addr = addressEdit.text.toString().trim().split(":")

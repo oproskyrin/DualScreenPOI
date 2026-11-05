@@ -15,20 +15,30 @@ func argValue(_ name: String, _ fallback: String) -> String {
     return fallback
 }
 
-let width = Int(argValue("--width", "2944"))!
-let height = Int(argValue("--height", "1840"))!
+let width0 = Int(argValue("--width", "2944"))!
+let height0 = Int(argValue("--height", "1840"))!
 let fps = Int(argValue("--fps", "120"))!
 let bitrateMbps = Int(argValue("--bitrate", "80"))!
 let port = UInt16(argValue("--port", "7381"))!
 let hidpi = args.contains("--no-hidpi") ? false : true
-// 1 = UI в нативных пикселях (мелко, максимум места),
-// 2 = Retina @2x: "looks like" 1472×920, текст резкий (по умолчанию)
-let scale = Int(argValue("--scale", "2"))!
+// --mirror: stream the main display as-is (no virtual display created)
+let mirror = args.contains("--mirror")
 // First rate is the active display mode (max first), rest are selectable.
 let rates: [Double] = [144, 120, 90, 60]
 
-print("[ds] DualScreenHost starting: \(width)x\(height)@\(fps)fps, \(bitrateMbps) Mbps, port \(port), hidpi=\(hidpi), scale=\(scale)")
+print("[ds] DualScreenHost starting: mode=\(mirror ? "mirror" : "extend") \(width0)x\(height0)@\(fps)fps, \(bitrateMbps) Mbps, port \(port), hidpi=\(hidpi)")
 
+var displayID: CGDirectDisplayID = 0
+var width = width0
+var height = height0
+
+if mirror {
+    // Mirror mode: capture the main display, no virtual display at all.
+    displayID = CGMainDisplayID()
+    width = CGDisplayPixelsWide(displayID)
+    height = CGDisplayPixelsHigh(displayID)
+    print("[ds] mirroring main display: \(width)x\(height) px (id=\(displayID))")
+} else {
 // 1. Screen Recording permission (TCC). Prompts on first run.
 if !CGPreflightScreenCaptureAccess() {
     print("[ds] requesting Screen Recording permission…")
@@ -36,17 +46,18 @@ if !CGPreflightScreenCaptureAccess() {
 }
 
 // 2. Create the virtual extended display (must run on main thread — we are).
-let displayID = rates.withUnsafeBufferPointer { ratesBuf in
+let createdID = rates.withUnsafeBufferPointer { ratesBuf in
     vd_create_display(UInt32(width), UInt32(height),
                       ratesBuf.baseAddress, ratesBuf.count,
                       hidpi,
                       0x041A, 0x371F, 0x2023, // Lenovo-ish vendor/product (arbitrary, stable)
                       "Xiaoxin Pad Pro 12.7")
 }
-guard displayID != 0 else {
+guard createdID != 0 else {
     FileHandle.standardError.write("FATAL: virtual display creation failed\n".data(using: .utf8)!)
     exit(1)
 }
+displayID = createdID
 print("[ds] virtual display created: id=\(displayID)")
 
 // 3. Position the virtual display right of the main display with aligned
@@ -63,8 +74,6 @@ do {
         print("[ds] warning: still in mirror set")
     }
 }
-
-let injector = InputInjector(displayID: displayID)
 
 // 3b. HiDPI: the shim declares half-size POINTS modes when hidpi is on.
 // macOS's synthesized ladder usually wins mode selection, so force our
@@ -87,8 +96,9 @@ if hidpi {
         }
     }
 }
+} // end extend-mode setup
 
-// 4. Capture + encode pipeline, started on first client hello.
+let injector = InputInjector(displayID: displayID)
 final class Pipeline {
     let capturer: DisplayCapturer
     let encoder = VideoEncoder()
@@ -229,6 +239,7 @@ server.onControl = { hello in
         "fps": fps,
         "bitrate": bitrateMbps * 1_000_000,
         "codec": "hevc",
+        "mirror": mirror,
         "audio": "pcm16",
         "audioRate": 48000,
         "audioChannels": 2,
