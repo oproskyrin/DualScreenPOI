@@ -15,6 +15,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let displayID: CGDirectDisplayID
     private var stream: SCStream?
     private var serial = 0
+    private static var loggedFirstFrame = false
 
     var onFrame: ((CVImageBuffer, CMTime) -> Void)?
     /// Raw 16-bit LE 48kHz stereo PCM chunks of system audio.
@@ -79,6 +80,10 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         switch type {
         case .screen:
             guard let imageBuffer = sampleBuffer.imageBuffer else { return }
+            if !Self.loggedFirstFrame {
+                Self.loggedFirstFrame = true
+                print("[capture] first frame: \(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer)) px")
+            }
             onFrame?(imageBuffer, sampleBuffer.presentationTimeStamp)
         case .audio:
             var samples = [Int16](repeating: 0, count: 8192)

@@ -23,6 +23,10 @@ let port = UInt16(argValue("--port", "7381"))!
 let hidpi = args.contains("--no-hidpi") ? false : true
 // --mirror: stream the main display as-is (no virtual display created)
 let mirror = args.contains("--mirror")
+// --logical WxH (extend mode): pick the display's logical resolution.
+// Bigger = sharper stream (less upscaling to 2944x1840) but smaller UI.
+// 1472x920 = comfy default; 2944x1840 = pixel-perfect 1:1.
+let logicalArg = argValue("--logical", "")
 // First rate is the active display mode (max first), rest are selectable.
 let rates: [Double] = [144, 120, 90, 60]
 
@@ -35,8 +39,19 @@ var height = height0
 if mirror {
     // Mirror mode: capture the main display, no virtual display at all.
     displayID = CGMainDisplayID()
-    width = CGDisplayPixelsWide(displayID)
-    height = CGDisplayPixelsHigh(displayID)
+    // Apple Silicon built-in panels hide their 2x backing: CG reports the
+    // logical size as "pixels" (e.g. 1408x881). Request 2x from SCK — it
+    // caps at the real native backing (2816x1762), giving a retina mirror.
+    let b = CGDisplayBounds(displayID)
+    let pxW = CGDisplayPixelsWide(displayID)
+    let pxH = CGDisplayPixelsHigh(displayID)
+    if pxW <= Int(b.width) + 1 && pxH <= Int(b.height) + 1 {
+        width = pxW * 2
+        height = pxH * 2
+    } else {
+        width = pxW
+        height = pxH
+    }
     print("[ds] mirroring main display: \(width)x\(height) px (id=\(displayID))")
 } else {
 // 1. Screen Recording permission (TCC). Prompts on first run.
@@ -75,24 +90,34 @@ do {
     }
 }
 
-// 3b. HiDPI: the shim declares half-size POINTS modes when hidpi is on.
-// macOS's synthesized ladder usually wins mode selection, so force our
-// declared mode; with hiDPI=1 the backing store should be 2x the points.
-if hidpi {
+// 3b. Logical resolution: with hidpi on the shim declares half-size modes
+// (1472x920 default). --logical WxH overrides with any ladder mode —
+// closer to native = sharper stream (SCK upscales the backing to 2944x1840).
+if !mirror {
     Thread.sleep(forTimeInterval: 0.5) // let WindowServer settle
     if let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] {
-        print("[ds] active: \(CGDisplayBounds(displayID).width)x\(CGDisplayBounds(displayID).height) pts")
-        let want = modes.first {
-            $0.width == width / 2 && $0.height == height / 2 &&
-            abs($0.refreshRate - rates[0]) < 1.0
+        var targetW = width / 2, targetH = height / 2
+        if !logicalArg.isEmpty {
+            let parts = logicalArg.split(whereSeparator: { $0 == "x" || $0 == "X" })
+            if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                targetW = w; targetH = h
+            } else {
+                print("[ds] bad --logical \"\(logicalArg)\" (want WxH); using default")
+            }
+        }
+        // closest ladder mode to the requested logical size
+        let want = modes.min {
+            let d1 = abs($0.width - targetW) + abs($0.height - targetH)
+            let d2 = abs($1.width - targetW) + abs($1.height - targetH)
+            return d1 == d2 ? $0.refreshRate > $1.refreshRate : d1 < d2
         }
         if let want {
             let err = CGDisplaySetDisplayMode(displayID, want, nil)
             let b = CGDisplayBounds(displayID)
-            print("[ds] setDisplayMode(\(width / 2)x\(height / 2)): err=\(err.rawValue), " +
-                  "bounds=\(Int(b.width))x\(Int(b.height)) pts")
+            print("[ds] logical \(want.width)x\(want.height)@\(Int(want.refreshRate)): err=\(err.rawValue), " +
+                  "bounds=\(Int(b.width))x\(Int(b.height)) pts, mode px=\(want.pixelWidth)x\(want.pixelHeight)")
         } else {
-            print("[ds] half-res mode not found in ladder")
+            print("[ds] no modes available for logical selection")
         }
     }
 }
