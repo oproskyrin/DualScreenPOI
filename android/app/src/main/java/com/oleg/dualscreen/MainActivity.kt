@@ -189,11 +189,17 @@ class MainActivity : AppCompatActivity() {
             toolbar.addView(ui.button(label, action = action), LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(4) })
         }
         root.addView(toolbar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { topMargin=ui.dp(12); rightMargin=ui.dp(12) })
-        toolbarHandle = ui.button("•••") { setToolbarVisible(true) }.apply {
+        toolbarHandle = ui.button("☰") { setToolbarVisible(true) }.apply {
             contentDescription = "Показать панель управления"
             minWidth = ui.dp(56); minimumWidth = ui.dp(56)
-            background = ui.shape(0x6614202E, 16, 0x66FFFFFF)
-            alpha = 0.55f
+            // Only the background is translucent: fading the whole View also
+            // fades the icon/border, making the control disappear on wallpaper.
+            background = ui.shape(0xD914202E.toInt(), 16, 0xCCFFFFFF.toInt())
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 26f
+            setPadding(0, 0, 0, 0)
+            elevation = ui.dp(6).toFloat()
+            alpha = 1f
         }
         root.addView(toolbarHandle, FrameLayout.LayoutParams(ui.dp(56), ui.dp(56), Gravity.TOP or Gravity.START))
         enableHandleDrag()
@@ -293,7 +299,7 @@ class MainActivity : AppCompatActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX; downY = event.rawY
                     startX = view.x; startY = view.y; dragging = false
-                    view.animate().cancel(); view.alpha = 0.9f
+                    view.animate().cancel(); view.alpha = 1f
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -310,7 +316,7 @@ class MainActivity : AppCompatActivity() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) prefs.edit().putFloat("toolbar_x", handleX).putFloat("toolbar_y", handleY).apply()
                     else if (event.actionMasked == MotionEvent.ACTION_UP) view.performClick()
-                    view.animate().alpha(0.55f).setDuration(250).start()
+                    view.alpha = 1f
                     true
                 }
                 else -> true
