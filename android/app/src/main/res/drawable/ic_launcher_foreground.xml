@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original DualScreen mark. Geometry stays in the adaptive icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#74DDC5" android:fillType="evenOdd" android:pathData="M32,35 H55 Q61,35 61,41 V57 Q61,63 55,63 H32 Q26,63 26,57 V41 Q26,35 32,35 Z M32,39 Q30,39 30,41 V57 Q30,59 32,59 H55 Q57,59 57,57 V41 Q57,39 55,39 Z" />
+    <path android:fillColor="#74DDC5" android:fillType="nonZero" android:pathData="M40,63 H44 V70 H48 Q50,70 50,72 Q50,74 48,74 H36 Q34,74 34,72 Q34,70 36,70 H40 Z" />
+    <path android:fillColor="#9CEDE4" android:fillType="nonZero" android:pathData="M58,52 H68 V56 H58 Z" />
+    <path android:fillColor="#9CEDE4" android:fillType="evenOdd" android:pathData="M69,43 H77 Q82,43 82,48 V69 Q82,74 77,74 H69 Q64,74 64,69 V48 Q64,43 69,43 Z M69,47 Q68,47 68,48 V66 H78 V48 Q78,47 77,47 Z" />
+    <path android:fillColor="#0A1019" android:fillType="nonZero" android:pathData="M71,69 H75 Q76,69 76,70 Q76,71 75,71 H71 Q70,71 70,70 Q70,69 71,69 Z" />
+</vector>

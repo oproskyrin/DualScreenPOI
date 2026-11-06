@@ -1,14 +1,17 @@
 package com.oleg.dualscreen
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Point
 import android.media.AudioManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -18,6 +21,10 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import org.json.JSONObject
 import java.util.Locale
 import kotlin.math.abs
@@ -27,6 +34,13 @@ class MainActivity : AppCompatActivity() {
     private enum class State { IDLE, DISCOVERING, CONNECTING, STREAMING, RECONNECTING, ERROR }
     private val handler = Handler(Looper.getMainLooper())
     private val session = ConnectionSession()
+    private var notificationOwner: Long? = null
+    private var notificationServiceStarted = false
+    private var activityVisible = false
+    private var notificationExplanation: AlertDialog? = null
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) notificationUnavailable()
+    }
     private val mediaLock = Any()
     private val prefs by lazy { getSharedPreferences("ds", MODE_PRIVATE) }
     private lateinit var ui: ClientUi
@@ -90,6 +104,7 @@ class MainActivity : AppCompatActivity() {
                 lastStatsSent = now
                 connection?.sendStats(JSONObject().put("latencyMs", latency).put("fps", fps))
             }
+            updateSessionNotification()
             handler.postDelayed(this, 1000)
         }
     }
@@ -260,6 +275,7 @@ class MainActivity : AppCompatActivity() {
         if (message.isNotEmpty()) { homeStatus.text = message; overlayText.text = message }
         if (busy || live) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        updateSessionNotification()
     }
 
     private fun setToolbarVisible(visible: Boolean) {
@@ -325,6 +341,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleAutoconnect(intent: Intent) {
+        if (intent.action == SessionNotificationService.ACTION_OPEN) return
         if (!intent.getBooleanExtra("autoconnect", false) || !session.allowAutoconnect ||
             state in listOf(State.CONNECTING, State.STREAMING, State.RECONNECTING)) return
         val endpoint = Endpoint.parse(intent.getStringExtra("addr") ?: Endpoint.USB.address) ?: return
@@ -349,8 +366,11 @@ class MainActivity : AppCompatActivity() {
             config = JSONObject(); lastHostStats = null
         }
         prefs.edit().putBoolean("user_stopped", false).apply()
-
+        val notification = SessionNotificationStatus(endpoint, wifi, SessionPhase.CONNECTING)
+        notificationOwner = SessionNotificationService.sessions.begin(notification)
         setState(State.CONNECTING, "Подключение · ${if (wifi) endpoint.host else "USB"}")
+        startSessionNotification()
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) offerSessionNotifications()
         val size = Point()
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealSize(size)
@@ -415,7 +435,81 @@ class MainActivity : AppCompatActivity() {
         connection = DsxpConnection(endpoint.host, endpoint.port, listener).also { it.connect(size.x, size.y, requestedHz) }
     }
 
+    private fun updateSessionNotification() {
+        val owner = notificationOwner ?: return
+        val current = SessionNotificationService.sessions.current ?: return
+        val phase = when (state) {
+            State.CONNECTING -> SessionPhase.CONNECTING
+            State.STREAMING -> SessionPhase.CONNECTED
+            State.RECONNECTING -> SessionPhase.RECONNECTING
+            else -> return
+        }
+        SessionNotificationService.sessions.update(owner, current.copy(
+            phase = phase,
+            mirror = if (config.has("mirror")) config.optBoolean("mirror") else null,
+            configuredFps = if (config.has("fps")) config.optInt("fps") else null,
+            decoderFps = decoder?.takeIf { it.started }?.fps
+        ))
+    }
+
+    private fun startSessionNotification() {
+        if (!activityVisible || notificationOwner == null || notificationServiceStarted) return
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, SessionNotificationService::class.java))
+            notificationServiceStarted = true
+        } catch (e: RuntimeException) {
+            android.util.Log.w("DualScreen", "Cannot start Mac session service", e)
+            Toast.makeText(this, "Android не разрешил фоновое соединение. Оставьте DualScreen открытым.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun stopSessionNotification() {
+        val owner = notificationOwner ?: return
+        notificationOwner = null
+        notificationServiceStarted = false
+        if (SessionNotificationService.sessions.end(owner)) {
+            stopService(Intent(this, SessionNotificationService::class.java))
+        }
+    }
+
+    private fun notificationUnavailable() {
+        Toast.makeText(this, "Уведомления выключены: возврат из шторки недоступен. Откройте DualScreen через недавние приложения. Соединение не остановлено.", Toast.LENGTH_LONG).show()
+    }
+
+    private fun offerSessionNotifications(explicit: Boolean = false) {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || notificationExplanation?.isShowing == true) return
+        val channel = getSystemService(android.app.NotificationManager::class.java)
+            .getNotificationChannel(SessionNotificationService.CHANNEL_ID)
+        val allowed = NotificationManagerCompat.from(this).areNotificationsEnabled() &&
+            channel?.importance != android.app.NotificationManager.IMPORTANCE_NONE
+        if (allowed) {
+            if (explicit) Toast.makeText(this, "Уведомление появляется, пока идёт соединение с Mac.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val prompted = prefs.getBoolean("notification_prompted", false)
+        if (!explicit && prompted) return
+        if (explicit && (prompted || Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)) {
+            startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+            return
+        }
+        if (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            if (explicit) notificationUnavailable()
+            return
+        }
+        prefs.edit().putBoolean("notification_prompted", true).apply()
+        notificationExplanation = AlertDialog.Builder(this)
+            .setTitle("Возврат к экрану Mac")
+            .setMessage("Разрешите тихое уведомление: в нём видны соединение и частота кадров. Нажатие вернёт DualScreen из шторки без нового подключения. Без разрешения соединение работает, но вернуться можно только через недавние приложения.")
+            .setPositiveButton("Разрешить") { _, _ -> notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+            .setNegativeButton("Не сейчас") { _, _ -> notificationUnavailable() }
+            .setOnDismissListener { notificationExplanation = null }
+            .show()
+    }
+
     private fun disconnectHome() {
+        stopSessionNotification()
         synchronized(mediaLock) {
             session.cancel(); streaming = false
             connection?.close(); connection = null
@@ -520,6 +614,7 @@ class MainActivity : AppCompatActivity() {
     private fun showSettings() {
         settingsDialog?.dismiss()
         val panel = ui.column(24)
+        ui.addButton(panel, "Уведомление о соединении") { offerSessionNotifications(explicit = true) }
         val mirror = if (config.has("mirror")) config.optBoolean("mirror") else lastHostStats?.optString("mode") == "mirror"
         val mode = if (mirror) "Зеркало" else "Расширение"
         val connected = streaming
@@ -623,7 +718,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); relayoutStream(pendingWidth, pendingHeight) }
+    override fun onStart() {
+        super.onStart()
+        activityVisible = true
+        startSessionNotification()
+    }
+    override fun onResume() {
+        super.onResume()
+        // Lifecycle reaches RESUMED after this callback returns.
+        handler.post { if (notificationOwner != null) offerSessionNotifications() }
+    }
     override fun onStop() {
+        activityVisible = false
         stopDiscovery()
         if (state == State.DISCOVERING) { setState(State.IDLE, "Поиск приостановлен. Нажмите «Найти Mac по Wi-Fi»."); renderDiscovered() }
         super.onStop()
@@ -640,6 +746,8 @@ class MainActivity : AppCompatActivity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
     }
     override fun onDestroy() {
+        notificationExplanation?.dismiss()
+        stopSessionNotification()
         session.cancel(); stopDiscovery(); handler.removeCallbacksAndMessages(null)
         synchronized(mediaLock) { streaming = false; connection?.close(); decoder?.stop(); decoder = null; audioPlayer.stop() }
         super.onDestroy()
