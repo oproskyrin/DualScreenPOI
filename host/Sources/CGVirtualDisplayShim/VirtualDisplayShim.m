@@ -64,19 +64,17 @@ uint32_t vd_create_display(uint32_t pixelW, uint32_t pixelH,
     settings.hiDPI = hiDPI ? 1 : 0;
 
     NSMutableArray *modes = [NSMutableArray array];
-    // force-hidpi technique: with hiDPI=1 the compositor treats the declared
-    // mode size as POINTS and renders with a 2x pixel backing store, as long
-    // as maxPixels == mode * 2 and the mode list stays simple (full-res
-    // extra modes break the @2x selection).
-    //   hiDPI:     mode 1472x920 (points) -> 2944x1840 pixels
-    //   !hiDPI:    mode 2944x1840 -> 2944x1840 pixels (1:1)
-    if (hiDPI) {
-        for (size_t i = 0; i < rateCount; i++) {
-            [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:pixelW / 2 height:pixelH / 2 refreshRate:rates[i]]];
-        }
-    } else {
-        for (size_t i = 0; i < rateCount; i++) {
-            [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:pixelW height:pixelH refreshRate:rates[i]]];
+    // hiDPI=1 + a RICH mode list whose top mode matches maxPixels makes
+    // WindowServer synthesize @2x (Retina) variants of every mode — those
+    // hidden duplicates are then selected via kCGDisplayShowDuplicateLowResolutionModes
+    // (hidpi-mirror / BetterDummy technique).
+    for (size_t i = 0; i < rateCount; i++) {
+        [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:pixelW height:pixelH refreshRate:rates[i]]];
+    }
+    const unsigned int extra[][2] = { {2560, 1600}, {1920, 1200} };
+    for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]); i++) {
+        if (extra[i][0] < pixelW && extra[i][1] < pixelH) {
+            [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:extra[i][0] height:extra[i][1] refreshRate:rates[0]]];
         }
     }
     // (No extra "standard" sizes: a clean list is required for the @2x

@@ -184,6 +184,7 @@ final class HostApp {
     private var virtualCreated = false
     private var injector: InputInjector?
     private(set) var pipeline: Pipeline?
+    private var menuBar: MenuBar?
     private let rates: [Double] = [144, 120, 90, 60]
 
     // adaptive bitrate
@@ -225,7 +226,10 @@ final class HostApp {
             RunLoop.main.add(usbTimer, forMode: .common)
         }
 
-        MenuBar(host: self)
+        // Strong reference: the status item itself is retained by the system
+        // (icon stays), but the menu items' targets die with this object —
+        // an unreferenced MenuBar shows a dead, greyed-out menu.
+        menuBar = MenuBar(host: self)
         setupSignalHandler()
         print("[ds] ready (menu bar icon active)")
         // NSApp.run() — not RunLoop.main.run(): menu tracking in the status
@@ -306,22 +310,36 @@ final class HostApp {
     }
 
     /// Selects the ladder mode closest to the requested logical size.
+    /// Prefers a synthesized HiDPI @2x variant (points = W, pixels = 2W):
+    /// by default CGDisplayCopyAllDisplayModes HIDES those; requesting them
+    /// via kCGDisplayShowDuplicateLowResolutionModes is the missing key
+    /// (technique from hidpi-mirror / BetterDummy).
     func applyLogical(_ w: Int, _ h: Int, quiet: Bool = false) {
         guard settings.mode == .extend, displayID != 0 else { return }
         Thread.sleep(forTimeInterval: 0.3) // let WindowServer settle after creation
-        guard let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] else { return }
-        let want = modes.min {
-            let d1 = abs($0.width - w) + abs($0.height - h)
-            let d2 = abs($1.width - w) + abs($1.height - h)
-            return d1 == d2 ? $0.refreshRate > $1.refreshRate : d1 < d2
+        let opts = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        guard let modes = CGDisplayCopyAllDisplayModes(displayID, opts) as? [CGDisplayMode] else { return }
+
+        // best @2x mode matching the requested points size
+        let retina = modes.first {
+            $0.width == w && $0.height == h && $0.pixelWidth == w * 2 && $0.pixelHeight == h * 2
         }
-        guard let want else { return }
-        let err = CGDisplaySetDisplayMode(displayID, want, nil)
+        var want = retina
+        if want == nil {
+            want = modes.min {
+                let d1 = abs($0.width - w) + abs($0.height - h)
+                let d2 = abs($1.width - w) + abs($1.height - h)
+                return d1 == d2 ? $0.refreshRate > $1.refreshRate : d1 < d2
+            }
+        }
+        guard let mode = want else { return }
+        let err = CGDisplaySetDisplayMode(displayID, mode, nil)
         if !quiet {
-            print("[ds] logical \(want.width)x\(want.height): err=\(err.rawValue)")
+            print("[ds] logical \(mode.width)x\(mode.height) (px \(mode.pixelWidth)x\(mode.pixelHeight))" +
+                  "\(retina != nil ? " [RETINA @2x]" : ""): err=\(err.rawValue)")
         }
-        settings.logicalW = want.width
-        settings.logicalH = want.height
+        settings.logicalW = mode.width
+        settings.logicalH = mode.height
     }
 
     func setMode(_ mode: Mode) {
@@ -581,9 +599,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(modeItem)
 
         let logicalMenu = NSMenu(title: "Размер (extend)")
-        for (w, h) in [(1600, 1000), (1920, 1200), (2944, 1840)] {
-            let sharp = w >= 2944 ? " 1:1" : ""
-            let item = NSMenuItem(title: "\(w)×\(h)\(sharp)", action: #selector(logicalSelected(_:)), keyEquivalent: "")
+        for (w, h, label) in [(1472, 920, "  Retina ⭐"), (1920, 1200, " мелко-резко"), (2944, 1840, " 1:1 очень мелко")] {
+            let item = NSMenuItem(title: "\(w)×\(h)\(label)", action: #selector(logicalSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = "\(w)x\(h)"
             logicalMenu.addItem(item)
@@ -751,6 +768,9 @@ enum LaunchAgent {
 
 var settings = HostApp.Settings(
     mode: args.contains("--mirror") ? .mirror : .extend,
+    // TRUE Retina: 1472x920 points rendered into a 2944x1840 backing store
+    // (HiDPI mode selected via kCGDisplayShowDuplicateLowResolutionModes) —
+    // MacBook-grade sharpness with comfortable element sizes.
     logicalW: 1472,
     logicalH: 920,
     panelW: Int(argValue("--width", "2944"))!,

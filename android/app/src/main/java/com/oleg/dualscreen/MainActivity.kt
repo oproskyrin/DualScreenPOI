@@ -70,7 +70,9 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         }
     }
 
-    private val hzOptions = intArrayOf(144, 120, 90, 60)
+    // default 120: matches the 120fps stream 1:1 (ZUI caps the panel at
+    // 120Hz anyway; 144 causes judder without benefit)
+    private val hzOptions = intArrayOf(120, 144, 90, 60)
     private var hzIndex = 0
     private var pendingWidth = 0
     private var pendingHeight = 0
@@ -410,8 +412,8 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
 
     private fun showSettings() {
         val modes = arrayOf("Расширение (второй экран)", "Зеркало (повтор экрана)")
-        val logicals = arrayOf("1600×1000 (крупно)", "1920×1200 (баланс)", "2944×1840 (1:1)")
-        val logicalVals = arrayOf("1600x1000", "1920x1200", "2944x1840")
+        val logicals = arrayOf("1472×920 Retina ⭐ (крупно и резко)", "1920×1200 (мельче)", "2944×1840 (1:1, очень мелко)")
+        val logicalVals = arrayOf("1472x920", "1920x1200", "2944x1840")
         val conn = connection
 
         android.app.AlertDialog.Builder(this)
