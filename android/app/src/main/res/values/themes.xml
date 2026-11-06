@@ -2,5 +2,13 @@
 <resources>
     <style name="Theme.DualScreen" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+
+        <item name="android:windowBackground">#0A1019</item>
+        <item name="android:colorAccent">#74DDC5</item>
+        <item name="colorAccent">#74DDC5</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:statusBarColor">#0A1019</item>
+        <item name="android:navigationBarColor">#0A1019</item>
     </style>
 </resources>

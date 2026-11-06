@@ -203,22 +203,19 @@ size_t vtaudio_pcm16_stereo(CMSampleBufferRef sb, int16_t *outBuf, size_t outCap
 
     size_t sizeRequired = 0;
     CMBlockBufferRef blockBuffer = NULL;
-    if (CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sb, &sizeRequired, NULL, 0,
-            NULL, NULL, 0, &blockBuffer) != noErr ||
-        sizeRequired == 0 || blockBuffer == NULL) {
-        return 0;
-    }
+    // The sizing call may return ArrayTooSmall, without retained storage.
+    CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sb, &sizeRequired, NULL, 0, NULL, NULL, 0, NULL);
+    if (sizeRequired == 0) return 0;
     uint8_t *ablMem = malloc(sizeRequired);
     if (ablMem == NULL) {
-        CFRelease(blockBuffer);
         return 0;
     }
     if (CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
             sb, NULL, (AudioBufferList *)ablMem, sizeRequired,
-            NULL, NULL, 0, NULL) != noErr) {
+            NULL, NULL, 0, &blockBuffer) != noErr) {
         free(ablMem);
-        CFRelease(blockBuffer);
+        if (blockBuffer) CFRelease(blockBuffer);
         return 0;
     }
 
@@ -245,6 +242,6 @@ size_t vtaudio_pcm16_stereo(CMSampleBufferRef sb, int16_t *outBuf, size_t outCap
         }
     }
     free(ablMem);
-    CFRelease(blockBuffer);
+    if (blockBuffer) CFRelease(blockBuffer);
     return written;
 }

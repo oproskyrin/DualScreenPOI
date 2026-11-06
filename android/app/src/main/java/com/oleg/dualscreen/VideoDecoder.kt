@@ -21,7 +21,7 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
     private var frameCount = 0L
     private var windowStart = System.currentTimeMillis()
     @Volatile var fps = 0.0
-    /** Smoothed end-to-end latency (capture -> render), milliseconds. */
+    /** Smoothed decoder feed -> output latency, not capture-to-render, milliseconds. */
     @Volatile var latencyMs = 0.0
     var lastError: String? = null
         private set
@@ -75,9 +75,9 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
             }
             runCatching { format.setInteger("vendor.low-latency.enable", 1) }
             val c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            codec = c // own the codec before configure/start, including failure paths
             c.configure(format, surface, null, 0)
             c.start()
-            codec = c
             running = true
             started = true
             Thread({ drainOutput() }, "dsxp-drain").start()
@@ -105,7 +105,7 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
                 val buf = c.getInputBuffer(index) ?: return
                 buf.clear()
                 buf.put(accessUnit)
-                // wall-clock pts -> the renderer measures true end-to-end latency
+                // Monotonic local PTS measures decoder feed -> output only.
                 inputPts = System.nanoTime() / 1000
                 c.queueInputBuffer(index, 0, accessUnit.size, inputPts, 0)
             }

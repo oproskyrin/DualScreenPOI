@@ -11,8 +11,8 @@ android {
         applicationId = "com.oleg.dualscreen"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.8.0"
+        versionCode = 10
+        versionName = "0.9.0"
     }
 
     buildTypes {
@@ -31,6 +31,8 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.15.0")
 }

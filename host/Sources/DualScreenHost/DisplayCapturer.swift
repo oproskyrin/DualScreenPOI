@@ -15,6 +15,8 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let displayID: CGDirectDisplayID
     private var stream: SCStream?
     private var serial = 0
+    private var audioDiagnosticTime = Date.distantPast
+    private let audioRoute = TabletAudioRoute()
     private static var loggedFirstFrame = false
 
     var onFrame: ((CVImageBuffer, CMTime) -> Void)?
@@ -86,11 +88,18 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             onFrame?(imageBuffer, sampleBuffer.presentationTimeStamp)
         case .audio:
+            guard audioRoute.shouldForward() else { return }
             var samples = [Int16](repeating: 0, count: 8192)
             let written = samples.withUnsafeMutableBufferPointer { buf in
                 vtaudio_pcm16_stereo(sampleBuffer, buf.baseAddress, buf.count)
             }
             guard written > 0 else { return }
+            TabletAudioRoute.scale(&samples, count: written, gain: audioRoute.gain)
+            if Date().timeIntervalSince(audioDiagnosticTime) >= 3 {
+                audioDiagnosticTime = Date()
+                let peak = samples.prefix(written).map { abs(Int($0)) }.max() ?? 0
+                print("[audio] converted samples=\(written), peak=\(peak), gain=\(audioRoute.gain)")
+            }
             samples.withUnsafeBytes { raw in
                 onAudio?(Data(raw.bindMemory(to: UInt8.self).prefix(written * 2)))
             }

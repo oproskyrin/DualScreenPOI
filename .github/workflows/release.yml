@@ -20,6 +20,9 @@ jobs:
           java-version: "17"
 
       # ---- Mac host ----
+      - name: Test audio conversion and routing policy
+        run: bash scripts/test-host-audio.sh
+
       - name: Build DualScreenHost
         run: swift build -c release --package-path host
 
@@ -42,7 +45,7 @@ jobs:
 
       - name: Build APK
         working-directory: android
-        run: gradle assembleRelease --no-daemon -q
+        run: gradle assembleRelease test lint --no-daemon -q
 
       - name: Package APK
         run: |
