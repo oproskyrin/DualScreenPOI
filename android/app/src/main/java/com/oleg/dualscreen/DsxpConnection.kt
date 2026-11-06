@@ -17,6 +17,7 @@ class DsxpConnection(
     private val host: String,
     private val port: Int,
     private val listener: Listener,
+    private val diagnostics: (String) -> Unit = {},
     private val socketFactory: () -> Socket = { Socket() }
 ) {
     interface Listener {
@@ -38,6 +39,14 @@ class DsxpConnection(
     // (NetworkOnMainThreadException) — touch handlers and the stats overlay
     // both call send* from the UI thread
     private val sendExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val sessionId = nextSession.incrementAndGet()
+    @Volatile private var attempt = 0L
+    @Volatile private var attemptStarted = 0L
+    @Volatile private var disconnectReason = "EOF"
+    private fun log(event: String) {
+        runCatching { diagnostics("session=$sessionId attempt=$attempt $event") }
+    }
+    companion object { private val nextSession = java.util.concurrent.atomic.AtomicLong() }
 
     fun connect(width: Int, height: Int, maxRefresh: Int) {
         synchronized(lifecycleLock) {
@@ -50,7 +59,8 @@ class DsxpConnection(
                     backoffMs = 1000L // reset after a successful session
                 }
                 if (running.get() && !userClosed) {
-                    listener.onDisconnected("reconnect in ${backoffMs / 1000}s…")
+                    log("retry backoffMs=$backoffMs")
+                    listener.onDisconnected(disconnectReason)
                     try { Thread.sleep(backoffMs) } catch (_: InterruptedException) {}
                     backoffMs = (backoffMs * 2).coerceAtMost(5000L)
                 }
@@ -62,6 +72,10 @@ class DsxpConnection(
     /** One connection attempt + read loop. Returns true if a session was established. */
     private fun connectOnce(width: Int, height: Int, maxRefresh: Int): Boolean {
         var established = false
+        attempt++
+        attemptStarted = System.nanoTime()
+        disconnectReason = "EOF"
+        log("connect-attempt")
         try {
             val s = socketFactory()
             synchronized(lifecycleLock) {
@@ -77,6 +91,7 @@ class DsxpConnection(
             s.connect(InetSocketAddress(host, port), 4000)
             if (userClosed || !running.get()) return false
             established = true
+            log("connected durationMs=${(System.nanoTime() - attemptStarted) / 1_000_000}")
             val input = DataInputStream(BufferedInputStream(s.getInputStream(), 1 shl 18))
             synchronized(lifecycleLock) {
                 if (userClosed || !running.get()) return false
@@ -92,21 +107,28 @@ class DsxpConnection(
                 .put("maxRefresh", maxRefresh)
                 .put("name", android.os.Build.MODEL)
             sendFrame(0x00, hello.toString().toByteArray())
+            log("hello queued version=1 width=$width height=$height maxRefresh=$maxRefresh")
 
             while (running.get() && !userClosed) {
                 val type = input.read()
-                if (type < 0) break
+                if (type < 0) throw java.io.EOFException("EOF reading frame header")
                 val len = input.readInt()
-                if (len < 0 || len > 64_000_000) break
+                if (len < 0 || len > 64_000_000) throw java.io.IOException("invalid framing length=$len")
                 val payload = ByteArray(len)
                 var off = 0
                 while (off < len) {
                     val n = input.read(payload, off, len - off)
-                    if (n < 0) return true
+                    if (n < 0) throw java.io.EOFException("EOF reading frame body")
                     off += n
                 }
                 when (type) {
-                    0x00 -> listener.onAck(JSONObject(String(payload)))
+                    0x00 -> {
+                        val ack = try { JSONObject(String(payload)) } catch (_: org.json.JSONException) {
+                            throw java.io.IOException("invalid control JSON")
+                        }
+                        log("ack ok=${ack.optBoolean("ok")} width=${ack.optInt("width")} height=${ack.optInt("height")} fps=${ack.optInt("fps")}")
+                        listener.onAck(ack)
+                    }
                     0x01 -> listener.onVideoFrame(payload, false)
                     0x03 -> runCatching { listener.onStats(JSONObject(String(payload))) }
                     0x04 -> listener.onAudio(payload)
@@ -114,9 +136,13 @@ class DsxpConnection(
             }
             return true
         } catch (e: Exception) {
+            // Preserve explicit send/surface/manual reasons instead of replacing
+            // them with the SocketException caused by closing that socket.
+            if (disconnectReason == "EOF") disconnectReason = "${if (e is java.net.SocketTimeoutException) "read/connect timeout " else ""}${e.javaClass.name}: ${e.message.orEmpty()}"
             if (!running.get()) return true // deliberate close, not a failure
             return established
         } finally {
+            log("disconnected durationMs=${(System.nanoTime() - attemptStarted) / 1_000_000} reason=$disconnectReason")
             closeInternal()
         }
     }
@@ -129,7 +155,13 @@ class DsxpConnection(
     fun sendStats(json: JSONObject) = sendFrame(0x03, json.toString().toByteArray())
 
     /** Refresh the session after Android recreates a decoder surface. */
-    fun requestReconnect() { runCatching { socket?.close() } }
+    fun requestReconnect() {
+        synchronized(lifecycleLock) {
+            disconnectReason = "surface-requestReconnect"
+            log(disconnectReason)
+            runCatching { socket?.close() }
+        }
+    }
 
     private fun sendFrame(type: Int, payload: ByteArray) {
         if (userClosed || !running.get()) return
@@ -146,7 +178,11 @@ class DsxpConnection(
                     out.flush()
                 } catch (e: Exception) {
                     synchronized(lifecycleLock) {
-                        if (output === target) runCatching { socket?.close() }
+                        if (output === target) {
+                            disconnectReason = "send failure ${e.javaClass.name}: ${e.message.orEmpty()}"
+                            log(disconnectReason)
+                            runCatching { socket?.close() }
+                        }
                     }
                 }
             }
@@ -154,7 +190,12 @@ class DsxpConnection(
     }
 
     fun close() {
-        synchronized(lifecycleLock) { userClosed = true; running.set(false) }
+        synchronized(lifecycleLock) {
+            if (userClosed) return
+            disconnectReason = "manual-close"
+            log(disconnectReason)
+            userClosed = true; running.set(false)
+        }
         closeInternal()
         networkThread?.interrupt()
         sendExecutor.shutdownNow()

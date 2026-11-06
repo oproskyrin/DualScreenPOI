@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Point
+import android.hardware.input.InputManager
 import android.media.AudioManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -72,6 +73,15 @@ class MainActivity : AppCompatActivity() {
     private var diagnostics = false
     private var audioEnabled = true
     private var localCursor = true
+    private var physicalInputEnabled = true
+    private val physicalInput = PhysicalInputState()
+    private val clientLog by lazy { ClientLog({ getExternalFilesDir(null)?.let { java.io.File(it, "logs") } }) }
+    private val inputManager by lazy { getSystemService(INPUT_SERVICE) as InputManager }
+    private val inputDeviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) { clientLog.event("input-device added") }
+        override fun onInputDeviceChanged(deviceId: Int) { resetPhysicalInput(); clientLog.event("input-device changed") }
+        override fun onInputDeviceRemoved(deviceId: Int) { resetPhysicalInput(); clientLog.event("input-device removed") }
+    }
 
     private var keyboardVisible = false
     private var settingsDialog: AlertDialog? = null
@@ -118,13 +128,14 @@ class MainActivity : AppCompatActivity() {
         diagnostics = prefs.getBoolean("diagnostics", false)
         audioEnabled = prefs.getBoolean("audio_enabled", true)
         localCursor = prefs.getBoolean("local_cursor", true)
+        physicalInputEnabled = prefs.getBoolean("physical_input", true)
         requestedHz = prefs.getInt("requested_hz", 120)
         handleX = prefs.getFloat("toolbar_x", 1f)
         handleY = prefs.getFloat("toolbar_y", 0f)
         if (prefs.getBoolean("user_stopped", false)) session.cancel()
         volumeControlStream = AudioManager.STREAM_MUSIC
         root = FrameLayout(this).apply { setBackgroundColor(ui.background) }
-        surfaceView = SurfaceView(this)
+        surfaceView = SurfaceView(this).apply { isFocusable = true; isFocusableInTouchMode = true }
         root.addView(surfaceView, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         // Draw-only local cursor: right above the video, below every control.
         cursorOverlay = CursorOverlayView(this).apply { setCursorEnabled(localCursor) }
@@ -134,14 +145,20 @@ class MainActivity : AppCompatActivity() {
         buildKeyboard()
         setContentView(root)
         surfaceView.setOnTouchListener { _, event -> handleTouch(event) }
+        surfaceView.setOnGenericMotionListener { _, event -> handlePhysicalPointer(event) }
+        root.viewTreeObserver.addOnGlobalFocusChangeListener { _, focused ->
+            if (focused !== surfaceView) resetPhysicalInput()
+        }
+        inputManager.registerInputDeviceListener(inputDeviceListener, handler)
         surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 applyRefreshRate(requestedHz)
                 // A recreated surface needs a fresh keyframe even on a static Mac.
-                if (streaming) connection?.requestReconnect()
+                if (streaming) { resetPhysicalInput(); connection?.requestReconnect() }
             }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
             override fun surfaceDestroyed(holder: SurfaceHolder) {
+                resetPhysicalInput()
                 synchronized(mediaLock) { decoder?.stop(); decoder = null }
             }
         })
@@ -213,13 +230,14 @@ class MainActivity : AppCompatActivity() {
         toolbarHandle = ui.button("☰") { setToolbarVisible(true) }.apply {
             contentDescription = "Показать панель управления"
             minWidth = ui.dp(56); minimumWidth = ui.dp(56)
-            // Only the background is translucent: fading the whole View also
-            // fades the icon/border, making the control disappear on wallpaper.
-            background = ui.shape(0xD914202E.toInt(), 16, 0xCCFFFFFF.toInt())
-            setTextColor(android.graphics.Color.WHITE)
+            // Transparent hit target; only the menu glyph is visible at rest.
+            background = ui.shape(android.graphics.Color.TRANSPARENT, 16, android.graphics.Color.TRANSPARENT)
+            setTextColor(0x99FFFFFF.toInt())
+            setShadowLayer(ui.dp(2).toFloat(), 0f, ui.dp(1).toFloat(), 0x99000000.toInt())
             textSize = 26f
             setPadding(0, 0, 0, 0)
-            elevation = ui.dp(6).toFloat()
+            elevation = 0f
+            stateListAnimator = null
             alpha = 1f
         }
         root.addView(toolbarHandle, FrameLayout.LayoutParams(ui.dp(56), ui.dp(56), Gravity.TOP or Gravity.START))
@@ -323,6 +341,7 @@ class MainActivity : AppCompatActivity() {
                     downX = event.rawX; downY = event.rawY
                     startX = view.x; startY = view.y; dragging = false
                     view.animate().cancel(); view.alpha = 1f
+                    toolbarHandle.setTextColor(android.graphics.Color.WHITE)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -340,6 +359,7 @@ class MainActivity : AppCompatActivity() {
                     if (dragging) prefs.edit().putFloat("toolbar_x", handleX).putFloat("toolbar_y", handleY).apply()
                     else if (event.actionMasked == MotionEvent.ACTION_UP) view.performClick()
                     view.alpha = 1f
+                    toolbarHandle.setTextColor(0x99FFFFFF.toInt())
                     true
                 }
                 else -> true
@@ -362,6 +382,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectTo(endpoint: Endpoint, wifi: Boolean) {
+        resetPhysicalInput()
         stopDiscovery()
         val token: Long
         synchronized(mediaLock) {
@@ -381,12 +402,14 @@ class MainActivity : AppCompatActivity() {
         val size = Point()
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealSize(size)
+        val callbackEpoch = java.util.concurrent.atomic.AtomicLong()
         val listener = object : DsxpConnection.Listener {
             override fun onAck(config: JSONObject) {
+                val epoch = callbackEpoch.get()
                 synchronized(mediaLock) {
                     if (!session.accepts(token)) return
                     if (!config.optBoolean("ok")) {
-                        handler.post { if (session.accepts(token)) { disconnectHome(); setState(State.ERROR, "Mac отклонил подключение. Проверьте приложение на Mac.") } }
+                        handler.post { if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, "Mac отклонил подключение. Проверьте приложение на Mac.") } }
                         return
                     }
                     val w = config.optInt("width", 2944); val h = config.optInt("height", 1840)
@@ -399,16 +422,18 @@ class MainActivity : AppCompatActivity() {
                     else audioPlayer.stop()
                 }
                 handler.post {
-                    if (!session.accepts(token)) return@post
+                    if (!session.accepts(token) || callbackEpoch.get() != epoch) return@post
                     relayoutStream(pendingWidth, pendingHeight)
                     if (wifi) prefs.edit().putString("wifi_addr", endpoint.address).apply()
                     setState(State.STREAMING)
+                    if (!keyboardVisible && settingsDialog?.isShowing != true && notificationExplanation?.isShowing != true) surfaceView.requestFocus()
                     if (settingsDialog?.isShowing == true) showSettings()
                     hideSystemUi()
                     handler.removeCallbacks(statsUpdater); handler.post(statsUpdater)
                 }
             }
             override fun onVideoFrame(annexB: ByteArray, isKeyframeHint: Boolean) {
+                val epoch = callbackEpoch.get()
                 synchronized(mediaLock) {
                     if (!session.accepts(token) || !streaming || !surfaceView.holder.surface.isValid) return
                     val d = decoder ?: VideoDecoder(surfaceView.holder.surface, pendingWidth, pendingHeight).also { decoder = it }
@@ -416,7 +441,7 @@ class MainActivity : AppCompatActivity() {
                         if (!d.isKeyframe(annexB)) return
                         if (!d.startFromKeyframe(annexB)) {
                             if (d.lastError != null) handler.post {
-                                if (session.accepts(token)) { disconnectHome(); setState(State.ERROR, "Не удалось запустить HEVC-декодер. Попробуйте подключиться снова.") }
+                                if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, "Не удалось запустить HEVC-декодер. Попробуйте подключиться снова.") }
                             }
                             return
                         }
@@ -427,19 +452,21 @@ class MainActivity : AppCompatActivity() {
             override fun onAudio(pcm: ByteArray) { synchronized(mediaLock) { if (session.accepts(token) && streaming && audioEnabled) audioPlayer.feed(pcm) } }
             override fun onStats(stats: JSONObject) { if (session.accepts(token)) lastHostStats = stats }
             override fun onDisconnected(reason: String?) {
+                val epoch = callbackEpoch.incrementAndGet()
                 synchronized(mediaLock) {
                     if (!session.accepts(token)) return
                     streaming = false; decoder?.stop(); decoder = null; audioPlayer.stop()
                 }
                 handler.post {
-                    if (!session.accepts(token)) return@post
+                    if (!session.accepts(token) || callbackEpoch.get() != epoch) return@post
+                    resetPhysicalInput(send = false)
                     hideKeyboard()
                     handler.removeCallbacks(statsUpdater)
                     setState(State.RECONNECTING, "Восстанавливаем связь · ${if (wifi) endpoint.host else "USB"}\nПроверьте ${if (wifi) "Wi-Fi и приложение на Mac" else "кабель и USB-туннель на Mac"}")
                 }
             }
         }
-        connection = DsxpConnection(endpoint.host, endpoint.port, listener).also { it.connect(size.x, size.y, requestedHz) }
+        connection = DsxpConnection(endpoint.host, endpoint.port, listener, diagnostics = clientLog::event).also { it.connect(size.x, size.y, requestedHz) }
     }
 
     private fun updateSessionNotification() {
@@ -506,6 +533,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         prefs.edit().putBoolean("notification_prompted", true).apply()
+        resetPhysicalInput()
         notificationExplanation = AlertDialog.Builder(this)
             .setTitle("Возврат к экрану Mac")
             .setMessage("Разрешите тихое уведомление: в нём видны соединение и частота кадров. Нажатие вернёт DualScreen из шторки без нового подключения. Без разрешения соединение работает, но вернуться можно только через недавние приложения.")
@@ -516,6 +544,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun disconnectHome() {
+        resetPhysicalInput()
         stopSessionNotification()
         synchronized(mediaLock) {
             session.cancel(); streaming = false
@@ -619,9 +648,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSettings() {
+        resetPhysicalInput()
         settingsDialog?.dismiss()
         val panel = ui.column(24)
         ui.addButton(panel, "Уведомление о соединении") { offerSessionNotifications(explicit = true) }
+        ui.addButton(panel, "Журнал соединения") { showConnectionLog() }
+        panel.addView(Switch(this).apply {
+            text = "Клавиатура и тачпад"; setTextColor(ui.ink); isChecked = physicalInputEnabled; minHeight = ui.dp(48)
+            contentDescription = "Клавиатура и тачпад"
+            setOnCheckedChangeListener { _, enabled ->
+                resetPhysicalInput(); physicalInputEnabled = enabled
+                prefs.edit().putBoolean("physical_input", enabled).apply()
+            }
+        })
+        ui.label(panel, "Физическая клавиатура и мышь управляют Mac над изображением. Meta → Cmd, Alt → Option, Ctrl → Ctrl. Системные клавиши и жесты Android могут остаться на планшете. Курсор Android не захватывается. Журнал не содержит нажатий и введённого текста.", 13f, ui.muted)
         val mirror = if (config.has("mirror")) config.optBoolean("mirror") else lastHostStats?.optString("mode") == "mirror"
         val mode = if (mirror) "Зеркало" else "Расширение"
         val connected = streaming
@@ -704,9 +744,84 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Отмена", null).show()
     }
 
+    private fun resetPhysicalInput(send: Boolean = true) {
+        val reset = physicalInput.reset(android.os.SystemClock.uptimeMillis())
+        if (send) connection?.sendInput(reset)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) resetPhysicalInput()
+    }
+
+    private fun nativeInputUi() = keyboardVisible || settingsDialog?.isShowing == true || notificationExplanation?.isShowing == true
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val hardware = event.deviceId >= 0 && event.device?.isVirtual == false &&
+            event.isFromSource(InputDevice.SOURCE_KEYBOARD) && event.flags and KeyEvent.FLAG_SOFT_KEYBOARD == 0
+        val eligible = PhysicalInputState.eligible(streaming && state == State.STREAMING,
+            physicalInputEnabled, activityVisible && hasWindowFocus(), nativeInputUi() || currentFocus !== surfaceView,
+            hardware, event.keyCode)
+        if (!eligible || event.action !in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return super.dispatchKeyEvent(event)
+        if (event.isCanceled) { resetPhysicalInput(); return true }
+        val down = event.action == KeyEvent.ACTION_DOWN
+        val unicode = if (down && event.metaState and PhysicalInputState.SHORTCUT_META == 0) event.unicodeChar else 0
+        // getUnicodeChar follows the keyboard's Android layout. Combining/dead
+        // keys have no standalone printable code point and fall back to raw codes.
+        val text = if (unicode > 0 && Character.isValidCodePoint(unicode)) String(Character.toChars(unicode)) else null
+        physicalInput.key(event.deviceId, event.keyCode, down, event.repeatCount,
+            KeyEvent.normalizeMetaState(event.metaState), event.downTime, text)?.let { connection?.sendInput(it) }
+        return true
+    }
+
+    /** Only SurfaceView listeners call this: toolbar and dialogs retain Android input. */
+    private fun handlePhysicalPointer(event: MotionEvent): Boolean {
+        if (!event.isFromSource(InputDevice.SOURCE_MOUSE) || !physicalInputEnabled || !streaming ||
+            state != State.STREAMING || !activityVisible || !hasWindowFocus() || nativeInputUi()) return false
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_CANCEL) { resetPhysicalInput(); return true }
+        if (action !in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_MOVE,
+                MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_SCROLL, MotionEvent.ACTION_BUTTON_PRESS,
+                MotionEvent.ACTION_BUTTON_RELEASE)) return false
+        if (action in listOf(MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE) && event.actionButton and 7 == 0) return false
+        if (surfaceView.width <= 0 || surfaceView.height <= 0) return false
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_BUTTON_PRESS) surfaceView.requestFocus()
+        val mask = when (action) {
+            MotionEvent.ACTION_BUTTON_PRESS -> event.buttonState or event.actionButton
+            MotionEvent.ACTION_BUTTON_RELEASE -> event.buttonState and event.actionButton.inv()
+            MotionEvent.ACTION_UP -> 0
+            else -> event.buttonState
+        } and 7
+        val kind = when (action) {
+            MotionEvent.ACTION_SCROLL -> "scroll"
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE -> "move"
+            else -> "button"
+        }
+        val (dx, dy) = PhysicalInputState.scrollTicks(event.getAxisValue(MotionEvent.AXIS_HSCROLL).toDouble(),
+            event.getAxisValue(MotionEvent.AXIS_VSCROLL).toDouble())
+        physicalInput.pointer(kind, mask, action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_BUTTON_PRESS,
+            event.x.toDouble() / surfaceView.width, event.y.toDouble() / surfaceView.height,
+            KeyEvent.normalizeMetaState(event.metaState), dx, dy).forEach { connection?.sendInput(it) }
+        return true
+    }
+
+    private fun showConnectionLog() {
+        resetPhysicalInput()
+        val text = ui.text("Загрузка…", 12f, ui.ink).apply {
+            setPadding(ui.dp(20), ui.dp(16), ui.dp(20), ui.dp(16))
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply { addView(text) }
+        val dialog = AlertDialog.Builder(this).setTitle("Журнал соединения").setView(scroll).setPositiveButton("Готово", null).show()
+        clientLog.recent().thenAccept { recent -> handler.post {
+            if (!isFinishing && !isDestroyed && dialog.isShowing) { text.text = recent; scroll.post { scroll.fullScroll(View.FOCUS_DOWN) } }
+        } }
+    }
+
     private fun sendKeyChar(value: String) { if (streaming) connection?.sendInput(JSONObject().put("t", "key").put("ch", value)) }
     private fun sendKeySpecial(value: String) { if (streaming) connection?.sendInput(JSONObject().put("t", "key").put("special", value)) }
     private fun toggleKeyboard() {
+        resetPhysicalInput()
         if (keyboardVisible) { hideKeyboard(); return }
         keyboardVisible = true; kbBuffer.requestFocus()
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(kbBuffer, InputMethodManager.SHOW_IMPLICIT)
@@ -715,6 +830,7 @@ class MainActivity : AppCompatActivity() {
         keyboardVisible = false
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(kbBuffer.windowToken, 0)
         kbBuffer.clearFocus()
+        if (state == State.STREAMING && settingsDialog?.isShowing != true) surfaceView.requestFocus()
     }
 
     private fun relayoutStream(w: Int, h: Int) {
@@ -746,6 +862,7 @@ class MainActivity : AppCompatActivity() {
         handler.post { if (notificationOwner != null) offerSessionNotifications() }
     }
     override fun onStop() {
+        resetPhysicalInput()
         activityVisible = false
         stopDiscovery()
         if (state == State.DISCOVERING) { setState(State.IDLE, "Поиск приостановлен. Нажмите «Найти Mac по Wi-Fi»."); renderDiscovered() }
@@ -763,10 +880,13 @@ class MainActivity : AppCompatActivity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
     }
     override fun onDestroy() {
+        resetPhysicalInput()
+        inputManager.unregisterInputDeviceListener(inputDeviceListener)
         notificationExplanation?.dismiss()
         stopSessionNotification()
         session.cancel(); stopDiscovery(); handler.removeCallbacksAndMessages(null)
         synchronized(mediaLock) { streaming = false; connection?.close(); decoder?.stop(); decoder = null; audioPlayer.stop() }
+        clientLog.close()
         super.onDestroy()
     }
 
@@ -784,6 +904,7 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun handleTouch(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return handlePhysicalPointer(event)
         if (!streaming) return false
         val conn = connection ?: return false
         val w = surfaceView.width.toFloat()

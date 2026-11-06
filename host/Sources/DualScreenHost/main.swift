@@ -97,7 +97,11 @@ final class Pipeline {
         let w = self.captureW, h = self.captureH, f = self.captureFps
         Task.detached {
             capt.stop()
-            try? await capt.start(fps: f, pixelWidth: w, pixelHeight: h)
+            do {
+                try await capt.start(fps: f, pixelWidth: w, pixelHeight: h)
+            } catch {
+                HostLog.shared.write("capture restart failed: \(error)")
+            }
         }
     }
 
@@ -118,8 +122,10 @@ final class Pipeline {
                 try self.encoder.start(width: width, height: height, fps: fps, bitrateBps: bitrateBps)
                 self.encoderReady = true
                 print("[ds] capture+encode running at \(width)x\(height)@\(fps)")
+                HostLog.shared.write("pipeline running width=\(width) height=\(height) requestedFps=\(fps)")
             } catch {
                 print("[ds] pipeline error: \(error)")
+                HostLog.shared.write("pipeline start failed: \(error)")
             }
             sem.signal()
         }
@@ -200,6 +206,10 @@ final class HostApp {
     }
 
     func run() {
+        HostLog.shared.write("host starting mode=\(settings.mode.rawValue) requestedFps=\(settings.fps)")
+        let inputAccess = CGPreflightPostEventAccess()
+        HostLog.shared.write("input permission granted=\(inputAccess)")
+        if !inputAccess { _ = CGRequestPostEventAccess() }
         arrangement.onChange = { [weak self] in self?.injector?.refreshBounds() }
         // Screen Recording permission (TCC). Prompts on first run.
         if !CGPreflightScreenCaptureAccess() {
@@ -245,6 +255,8 @@ final class HostApp {
 
     /// Teardown + setup for the current settings. Safe to call repeatedly.
     func applyMode() {
+        injector?.reset()
+        injector = nil
         arrangement.detach()
         pipeline?.reset()
         pipeline = nil
@@ -348,9 +360,11 @@ final class HostApp {
 
     func setLogical(w: Int, h: Int) {
         guard settings.mode == .extend else { return }
+        injector?.reset()
         arrangement.detach()
         applyLogical(w, h)
         arrangement.attach(displayID)
+        injector?.refreshBounds()
         pipeline?.kickAfterReconnect()
         sendAck()
     }
@@ -366,31 +380,42 @@ final class HostApp {
 
     private func wireServer() {
         server.onControl = { [weak self] hello in
-            guard let self else { return }
-            // remote commands from the tablet (settings panel)
-            if let cmd = hello["cmd"] as? String {
-                self.handleCommand(cmd, hello)
-                return
+            // Always enqueue: server callbacks share a serial queue. Async main
+            // delivery preserves their order without blocking pipeline work.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                // remote commands from the tablet (settings panel)
+                if let cmd = hello["cmd"] as? String {
+                    self.handleCommand(cmd, hello)
+                    return
+                }
+                guard (hello["magic"] as? String) == "DSXP" else { return }
+                let clientW = hello["width"] as? Int ?? self.settings.panelW
+                let clientH = hello["height"] as? Int ?? self.settings.panelH
+                let clientHz = hello["maxRefresh"] as? Int ?? 144
+                print("[ds] tablet hello: \(clientW)x\(clientH), panel \(clientHz) Hz")
+                self.injector?.refreshBounds()
+                self.startPipelineAndAck()
             }
-            guard (hello["magic"] as? String) == "DSXP" else { return }
-            let clientW = hello["width"] as? Int ?? self.settings.panelW
-            let clientH = hello["height"] as? Int ?? self.settings.panelH
-            let clientHz = hello["maxRefresh"] as? Int ?? 144
-            print("[ds] tablet hello: \(clientW)x\(clientH), panel \(clientHz) Hz")
-            self.injector?.refreshBounds()
-            self.startPipelineAndAck()
         }
         server.onInput = { [weak self] json in
-            self?.injector?.handle(json)
+            DispatchQueue.main.async { self?.injector?.handle(json) }
         }
         server.onClientStats = { [weak self] stats in
-            self?.adaptBitrate(clientStats: stats)
+            DispatchQueue.main.async { self?.adaptBitrate(clientStats: stats) }
         }
         server.onClientConnected = { [weak self] in
-            self?.injector?.refreshBounds()
+            DispatchQueue.main.async {
+                // Also covers replacement of an existing single-client session.
+                self?.injector?.reset()
+                self?.injector?.refreshBounds()
+            }
         }
-        server.onClientDisconnected = {
-            print("[ds] client disconnected; display stays, pipeline idles")
+        server.onClientDisconnected = { [weak self] in
+            DispatchQueue.main.async {
+                self?.injector?.reset()
+                print("[ds] client disconnected; display stays, pipeline idles")
+            }
         }
     }
 
@@ -505,9 +530,12 @@ final class HostApp {
 
     func shutdown() {
         print("\n[ds] shutting down…")
+        HostLog.shared.write("host shutdown requested")
+        injector?.reset()
         arrangement.detach()
         pipeline?.reset()
         if virtualCreated { vd_release_display() }
+        HostLog.shared.flush()
         exit(0)
     }
 }

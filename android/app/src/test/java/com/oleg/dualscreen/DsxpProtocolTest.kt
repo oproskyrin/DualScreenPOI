@@ -13,12 +13,44 @@ import java.util.concurrent.TimeUnit
 
 /** Actual loopback TCP, not fabricated DSXP responses from a mock transport. */
 class DsxpProtocolTest {
+    @Test fun diagnosticsPreserveEofInvalidFramingAndReconnectReasonWithoutPayloads() {
+        for (invalid in listOf(false, true)) {
+            val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val ended = CountDownLatch(1)
+            var reason: String? = null
+            val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
+            server.soTimeout = 2000
+            val client = DsxpConnection("127.0.0.1", server.localPort, object : DsxpConnection.Listener {
+                override fun onAck(config: JSONObject) {}
+                override fun onVideoFrame(annexB: ByteArray, isKeyframeHint: Boolean) {}
+                override fun onStats(stats: JSONObject) {}
+                override fun onDisconnected(value: String?) { reason = value; ended.countDown() }
+            }, diagnostics = { events.add(it) })
+            try {
+                client.connect(100, 100, 60)
+                server.accept().use { peer ->
+                    val input = DataInputStream(peer.getInputStream())
+                    input.readUnsignedByte(); val bytes = ByteArray(input.readInt()); input.readFully(bytes)
+                    if (invalid) DataOutputStream(peer.getOutputStream()).apply { write(1); writeInt(-1); flush() }
+                }
+                assertTrue(ended.await(2, TimeUnit.SECONDS))
+                assertTrue(reason!!.contains(if (invalid) "invalid framing" else "EOF"))
+                assertTrue(events.any { it.contains("attempt=1") && it.contains("connected") })
+                assertTrue(events.any { it.contains("durationMs=") && it.contains("disconnected") })
+                assertTrue(events.any { it.contains("retry") && it.contains("backoffMs=1000") })
+                assertFalse(events.any { it.contains("magic") || it.contains("payload") })
+                client.close()
+                assertTrue(events.any { it.contains("manual-close") })
+            } finally { client.close(); server.close() }
+        }
+    }
     @Test fun exchangesHelloControlInputStatsAudioAndStopsReconnectingAfterClose() {
         val ack = CountDownLatch(1)
         val video = CountDownLatch(1)
         val audio = CountDownLatch(1)
         val stats = CountDownLatch(1)
         val disconnected = CountDownLatch(1)
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
         val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
         server.soTimeout = 2000
         val client = DsxpConnection("127.0.0.1", server.localPort, object : DsxpConnection.Listener {
@@ -27,7 +59,7 @@ class DsxpProtocolTest {
             override fun onAudio(pcm: ByteArray) { if (pcm.contentEquals(byteArrayOf(3, 4))) audio.countDown() }
             override fun onStats(statsValue: JSONObject) { if (statsValue.optInt("hostFps") == 120) stats.countDown() }
             override fun onDisconnected(reason: String?) { disconnected.countDown() }
-        })
+        }, diagnostics = { events.add(it) })
         try {
             client.connect(2944, 1840, 120)
             server.accept().use { peer ->
@@ -51,6 +83,22 @@ class DsxpProtocolTest {
                 client.sendInput(JSONObject().put("t", "key").put("ch", "я"))
                 client.sendStats(JSONObject().put("latencyMs", 15).put("fps", 120))
                 assertEquals(0, read().first); assertEquals(2, read().first); assertEquals(3, read().first)
+                val state = PhysicalInputState()
+                val key = state.key(1, 29, true, 0, 0, 100, "я")!!
+                client.sendInput(key)
+                val wireKey = read()
+                assertEquals(2, wireKey.first)
+                assertEquals("hardwareKey", JSONObject(String(wireKey.second)).getString("t"))
+                assertEquals("я", JSONObject(String(wireKey.second)).getString("text"))
+                val pointer = state.pointer("button", 2, true, .2, .7, 0).single()
+                client.sendInput(pointer)
+                val wirePointer = read()
+                assertEquals(2, wirePointer.first)
+                assertEquals("right", JSONObject(String(wirePointer.second)).getString("button"))
+                client.sendInput(state.reset(200))
+                assertEquals("inputReset", JSONObject(String(read().second)).getString("t"))
+                assertTrue(events.any { it.contains("ack ok=true") })
+                assertFalse(events.any { it.contains("я") || it.contains("hardwareKey") || it.contains("code=") })
             }
             assertTrue(disconnected.await(2, TimeUnit.SECONDS))
             client.close()

@@ -24,6 +24,15 @@ final class FrameServer {
     private var listener: NWListener?
     private(set) var connection: NWConnection?
     private var clientHello: [String: Any]?
+    private let log: HostLog
+    private var sessionNumber = 0
+    private var sessionStarted = DispatchTime.now()
+    private var receivedBytes = 0
+    private var processedBytes = 0
+
+    init(log: HostLog = .shared) {
+        self.log = log
+    }
 
     /// JSON control messages from the tablet (the hello first).
     var onControl: (([String: Any]) -> Void)?
@@ -40,6 +49,11 @@ final class FrameServer {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        listener.stateUpdateHandler = { [weak self] state in
+            if case .failed(let error) = state {
+                self?.log.write("server listener failed: \(error)")
+            }
+        }
         // Announce the host on the local network: Android client discovers
         // "_dualscreen._tcp" and connects without typing the Mac's IP.
         listener.service = NWListener.Service(name: "DualScreen", type: "_dualscreen._tcp")
@@ -48,32 +62,38 @@ final class FrameServer {
             self.queue.async {
                 // single-client for now: drop previous connection
                 if let old = self.connection {
-                    old.cancel()
-                    self.connection = nil
+                    self.teardown(old, reason: "replaced by a new client")
                 }
                 self.accept(conn)
             }
         }
         self.listener = listener
         listener.start(queue: queue)
-        print("[server] listening on TCP:\(port)")
+        log.write("server listener starting port=\(port)")
     }
 
     private func accept(_ conn: NWConnection) {
         connection = conn
         clientHello = nil
+        rxBuffer.removeAll(keepingCapacity: true)
+        sessionNumber += 1
+        sessionStarted = .now()
+        receivedBytes = 0
+        processedBytes = 0
+        log.write("session=\(sessionNumber) accepted peer=\(conn.endpoint)")
         conn.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
+            guard let self, self.connection === conn else { return }
             switch state {
             case .ready:
-                print("[server] client connected: \(conn.endpoint)")
+                self.log.write("session=\(self.sessionNumber) connected peer=\(conn.endpoint)")
                 self.onClientConnected?()
                 self.receiveLoop(conn)
             case .failed(let e):
-                print("[server] connection failed: \(e)")
-                self.teardown()
+                self.teardown(conn, reason: "connection failed: \(e)")
             case .cancelled:
-                self.teardown()
+                self.teardown(conn, reason: "connection cancelled")
+            case .waiting(let error):
+                self.log.write("session=\(self.sessionNumber) waiting: \(error)")
             default:
                 break
             }
@@ -81,23 +101,31 @@ final class FrameServer {
         conn.start(queue: queue)
     }
 
-    private func teardown() {
-        if connection != nil {
-            connection = nil
-            rxBuffer.removeAll(keepingCapacity: true)
-            print("[server] client gone")
-            onClientDisconnected?()
-        }
+    private func teardown(_ conn: NWConnection, reason: String) {
+        guard connection === conn else { return }
+        connection = nil
+        clientHello = nil
+        rxBuffer.removeAll(keepingCapacity: true)
+        conn.stateUpdateHandler = nil
+        conn.cancel()
+        let elapsedMs = (DispatchTime.now().uptimeNanoseconds - sessionStarted.uptimeNanoseconds) / 1_000_000
+        log.write("session=\(sessionNumber) disconnected reason=\(reason) durationMs=\(elapsedMs) rxBytes=\(receivedBytes) processedTxBytes=\(processedBytes)")
+        onClientDisconnected?()
     }
 
     private func receiveLoop(_ conn: NWConnection) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self, self.connection === conn else { return }
             if let data, !data.isEmpty {
+                self.receivedBytes += data.count
                 self.rxBuffer.append(data)
                 self.processBuffer()
             }
-            if error == nil && !isComplete && self.connection === conn {
+            if let error {
+                self.teardown(conn, reason: "receive failed: \(error)")
+            } else if isComplete {
+                self.teardown(conn, reason: "peer EOF")
+            } else if self.connection === conn {
                 self.receiveLoop(conn)
             }
         }
@@ -110,6 +138,11 @@ final class FrameServer {
                 | Int(rxBuffer[rxBuffer.startIndex + 2]) << 16
                 | Int(rxBuffer[rxBuffer.startIndex + 3]) << 8
                 | Int(rxBuffer[rxBuffer.startIndex + 4])
+            // Client traffic is small JSON, never video or audio. Bound malformed frames.
+            guard len <= 1 << 20 else {
+                if let conn = connection { teardown(conn, reason: "invalid incoming frame length=\(len)") }
+                return
+            }
             guard rxBuffer.count >= 5 + len else { break }
             let payload = rxBuffer.subdata(in: rxBuffer.startIndex + 5 ..< rxBuffer.startIndex + 5 + len)
             rxBuffer.removeSubrange(rxBuffer.startIndex ..< rxBuffer.startIndex + 5 + len)
@@ -119,11 +152,12 @@ final class FrameServer {
 
     private func handleFrame(type: UInt8, payload: Data) {
         guard let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
-            print("[server] unparseable frame type=\(type) len=\(payload.count)")
+            log.write("session=\(sessionNumber) unparseable frame type=\(type) bytes=\(payload.count)")
             return
         }
         switch type {
         case 0x00:
+            if clientHello == nil { log.write("session=\(sessionNumber) first control received") }
             clientHello = json
             onControl?(json)
         case 0x02:
@@ -164,7 +198,18 @@ final class FrameServer {
             frame.append(UInt8((payload.count >> 8) & 0xFF))
             frame.append(UInt8(payload.count & 0xFF))
             frame.append(payload)
-            conn.send(content: frame, completion: .contentProcessed { _ in })
+            let count = frame.count
+            conn.send(content: frame, completion: .contentProcessed { [weak self, weak conn] error in
+                guard let self, let conn else { return }
+                self.queue.async {
+                    guard self.connection === conn else { return }
+                    if let error {
+                        self.teardown(conn, reason: "send failed type=\(type): \(error)")
+                    } else {
+                        self.processedBytes += count
+                    }
+                }
+            })
         }
     }
 

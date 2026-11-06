@@ -51,7 +51,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.queueDepth = 3 // capture buffering vs latency; 8 queued frames on transitions
+        config.queueDepth = 8 // Capture surface budget, not a fixed eight-frame presentation delay.
         config.showsCursor = true // cursor must be visible on the tablet
         config.width = pixelWidth
         config.height = pixelHeight
@@ -112,6 +112,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         if self.stream != nil {
+            HostLog.shared.write("capture stopped error=\(error)")
             onError?(error)
         }
     }

@@ -26,6 +26,12 @@ jobs:
       - name: Test saved display placement
         run: bash scripts/test-host-layout.sh
 
+      - name: Test connection lifecycle and persistent diagnostics
+        run: bash scripts/test-host-server.sh
+
+      - name: Test physical keyboard and pointer input
+        run: bash scripts/test-host-input.sh
+
       - name: Build DualScreenHost
         run: swift build -c release --package-path host
 
