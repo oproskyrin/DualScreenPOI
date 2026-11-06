@@ -23,6 +23,9 @@ jobs:
       - name: Test audio conversion and routing policy
         run: bash scripts/test-host-audio.sh
 
+      - name: Test saved display placement
+        run: bash scripts/test-host-layout.sh
+
       - name: Build DualScreenHost
         run: swift build -c release --package-path host
 

@@ -185,6 +185,8 @@ final class HostApp {
     private var injector: InputInjector?
     private(set) var pipeline: Pipeline?
     private var menuBar: MenuBar?
+    private let arrangement = DisplayArrangement()
+    private var signalSources: [DispatchSourceSignal] = []
     private let rates: [Double] = [144, 120, 90, 60]
 
     // adaptive bitrate
@@ -198,6 +200,7 @@ final class HostApp {
     }
 
     func run() {
+        arrangement.onChange = { [weak self] in self?.injector?.refreshBounds() }
         // Screen Recording permission (TCC). Prompts on first run.
         if !CGPreflightScreenCaptureAccess() {
             print("[ds] requesting Screen Recording permission…")
@@ -242,6 +245,7 @@ final class HostApp {
 
     /// Teardown + setup for the current settings. Safe to call repeatedly.
     func applyMode() {
+        arrangement.detach()
         pipeline?.reset()
         pipeline = nil
         if virtualCreated {
@@ -287,8 +291,8 @@ final class HostApp {
             streamH = settings.panelH
             print("[ds] extend: virtual display id=\(displayID)")
 
-            positionRightOfMain()
             applyLogical(settings.logicalW, settings.logicalH, quiet: true)
+            arrangement.attach(displayID)
         }
 
         injector = InputInjector(displayID: displayID)
@@ -300,14 +304,6 @@ final class HostApp {
         }
     }
 
-    private func positionRightOfMain() {
-        var config: CGDisplayConfigRef?
-        if CGBeginDisplayConfiguration(&config) == CGError.success {
-            let mainBounds = CGDisplayBounds(CGMainDisplayID())
-            CGConfigureDisplayOrigin(config, displayID, Int32(mainBounds.maxX), Int32(mainBounds.minY))
-            _ = CGCompleteDisplayConfiguration(config, .permanently)
-        }
-    }
 
     /// Selects the ladder mode closest to the requested logical size.
     /// Prefers a synthesized HiDPI @2x variant (points = W, pixels = 2W):
@@ -352,7 +348,9 @@ final class HostApp {
 
     func setLogical(w: Int, h: Int) {
         guard settings.mode == .extend else { return }
+        arrangement.detach()
         applyLogical(w, h)
+        arrangement.attach(displayID)
         pipeline?.kickAfterReconnect()
         sendAck()
     }
@@ -496,15 +494,21 @@ final class HostApp {
     }
 
     private func setupSignalHandler() {
-        let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        signal(SIGINT, SIG_IGN)
-        source.setEventHandler { [weak self] in
-            print("\n[ds] shutting down…")
-            self?.pipeline?.reset()
-            if self?.virtualCreated == true { vd_release_display() }
-            exit(0)
+        for number in [SIGINT, SIGTERM] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler { [weak self] in self?.shutdown() }
+            source.resume()
+            signalSources.append(source)
         }
-        source.resume()
+    }
+
+    func shutdown() {
+        print("\n[ds] shutting down…")
+        arrangement.detach()
+        pipeline?.reset()
+        if virtualCreated { vd_release_display() }
+        exit(0)
     }
 }
 
@@ -684,7 +688,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     @objc private func quit() {
         print("[ds] quit from menu")
-        exit(0)
+        host.shutdown()
     }
 }
 
