@@ -410,8 +410,8 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
 
     private fun showSettings() {
         val modes = arrayOf("Расширение (второй экран)", "Зеркало (повтор экрана)")
-        val logicals = arrayOf("1472×920 (крупно)", "1920×1200 (баланс)", "2944×1840 (1:1)")
-        val logicalVals = arrayOf("1472x920", "1920x1200", "2944x1840")
+        val logicals = arrayOf("1600×1000 (крупно)", "1920×1200 (баланс)", "2944×1840 (1:1)")
+        val logicalVals = arrayOf("1600x1000", "1920x1200", "2944x1840")
         val conn = connection
 
         android.app.AlertDialog.Builder(this)

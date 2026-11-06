@@ -578,8 +578,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(modeItem)
 
         let logicalMenu = NSMenu(title: "Размер (extend)")
-        for (w, h) in [(1472, 920), (1920, 1200), (2944, 1840)] {
-            let item = NSMenuItem(title: "\(w)×\(h)", action: #selector(logicalSelected(_:)), keyEquivalent: "")
+        for (w, h) in [(1600, 1000), (1920, 1200), (2944, 1840)] {
+            let sharp = w >= 2944 ? " 1:1" : ""
+            let item = NSMenuItem(title: "\(w)×\(h)\(sharp)", action: #selector(logicalSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = "\(w)x\(h)"
             logicalMenu.addItem(item)
