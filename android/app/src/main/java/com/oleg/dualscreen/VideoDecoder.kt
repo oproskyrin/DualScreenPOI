@@ -3,6 +3,8 @@ package com.oleg.dualscreen
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.view.Surface
 
 /**
@@ -10,14 +12,30 @@ import android.view.Surface
  * to the SurfaceView surface. The Mac host inlines VPS/SPS/PPS in every
  * keyframe; the first keyframe is harvested into csd-0 for codec config
  * (Snapdragon decoders refuse to configure without it).
+ *
+ * Fully asynchronous: MediaCodec.Callback on a dedicated handler thread.
+ * [feed] never blocks the caller — if no input buffer is instantly free the
+ * access unit goes into a small [AccessUnitQueue] that drops the oldest
+ * non-keyframe on overflow, so the network reader thread never stalls.
  */
 class VideoDecoder(private val surface: Surface, private val width: Int, private val height: Int) {
 
+    companion object {
+        /** Matches the host's reduced socket queue depth; small on purpose. */
+        private const val PENDING_CAPACITY = 3
+    }
+
     private var codec: MediaCodec? = null
+    private var callbackThread: HandlerThread? = null
     @Volatile private var running = false
     @Volatile var started = false
         private set
+    /** Guards freeInputs + pending + PTS assignment (network vs codec threads). */
+    private val lock = Any()
+    private val freeInputs = ArrayDeque<Int>()
+    private val pending = AccessUnitQueue(PENDING_CAPACITY)
     private var inputPts = 0L
+    // Output accounting: written only from the codec callback thread.
     private var frameCount = 0L
     private var windowStart = System.currentTimeMillis()
     @Volatile var fps = 0.0
@@ -76,11 +94,13 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
             runCatching { format.setInteger("vendor.low-latency.enable", 1) }
             val c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
             codec = c // own the codec before configure/start, including failure paths
+            val thread = HandlerThread("dsxp-codec").apply { start() }
+            callbackThread = thread
+            c.setCallback(callback, Handler(thread.looper))
             c.configure(format, surface, null, 0)
             c.start()
             running = true
             started = true
-            Thread({ drainOutput() }, "dsxp-drain").start()
             true
         } catch (e: Exception) {
             lastError = e.message
@@ -95,60 +115,102 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
         return firstTypes.contains(32) && firstTypes.contains(33)
     }
 
-    /** Feed one Annex-B access unit (the keyframe that started the codec too). */
+    /**
+     * Feed one Annex-B access unit (the keyframe that started the codec too).
+     * Non-blocking: uses a free input buffer if one is available, otherwise
+     * queues the AU with drop-oldest-delta policy on overflow.
+     */
     fun feed(accessUnit: ByteArray) {
-        val c = codec ?: return
         if (!running) return
-        try {
-            val index = c.dequeueInputBuffer(50_000)
-            if (index >= 0) {
-                val buf = c.getInputBuffer(index) ?: return
-                buf.clear()
-                buf.put(accessUnit)
-                // Monotonic local PTS measures decoder feed -> output only.
-                inputPts = System.nanoTime() / 1000
-                c.queueInputBuffer(index, 0, accessUnit.size, inputPts, 0)
+        val c = codec ?: return
+        synchronized(lock) {
+            if (!running) return
+            val index = freeInputs.removeFirstOrNull()
+            if (index != null) {
+                queueInput(c, index, accessUnit)
+            } else {
+                pending.offer(accessUnit, isKeyframe(accessUnit))
             }
+        }
+    }
+
+    /** Queues one AU into an input buffer. Callers hold [lock] and check running. */
+    private fun queueInput(c: MediaCodec, index: Int, au: ByteArray) {
+        try {
+            val buf = c.getInputBuffer(index)
+            if (buf == null) {
+                freeInputs.addLast(index)
+                return
+            }
+            buf.clear()
+            buf.put(au)
+            // Monotonic local PTS measures decoder feed -> output only.
+            inputPts = System.nanoTime() / 1000
+            c.queueInputBuffer(index, 0, au.size, inputPts, 0)
         } catch (_: Exception) {
             running = false
         }
     }
 
-    private fun drainOutput() {
-        val c = codec ?: return
-        val info = MediaCodec.BufferInfo()
-        while (running) {
-            try {
-                val out = c.dequeueOutputBuffer(info, 10_000)
-                if (out >= 0) {
-                    val nowUs = System.nanoTime() / 1000
-                    val lat = (nowUs - info.presentationTimeUs) / 1000.0
-                    if (lat in 0.0..500.0) { // sanity clamp
-                        latencyMs = latencyMs * 0.8 + lat * 0.2
-                    }
-                    c.releaseOutputBuffer(out, true)
-                    frameCount++
-                    val now = System.currentTimeMillis()
-                    val dt = now - windowStart
-                    if (dt >= 1000) {
-                        fps = frameCount * 1000.0 / dt
-                        frameCount = 0
-                        windowStart = now
-                    }
-                } else {
-                    Thread.sleep(1)
+    /** Moves as many queued AUs as possible into now-free input buffers. */
+    private fun pumpPending(c: MediaCodec) {
+        synchronized(lock) {
+            while (running) {
+                val index = freeInputs.removeFirstOrNull() ?: break
+                val frame = pending.poll()
+                if (frame == null) {
+                    freeInputs.addLast(index)
+                    break
                 }
-            } catch (_: Exception) {
-                break
+                queueInput(c, index, frame.data)
             }
         }
     }
 
+    private val callback = object : MediaCodec.Callback() {
+        override fun onInputBufferAvailable(c: MediaCodec, index: Int) {
+            synchronized(lock) { freeInputs.addLast(index) }
+            pumpPending(c)
+        }
+
+        override fun onOutputBufferAvailable(c: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+            try {
+                val nowUs = System.nanoTime() / 1000
+                val lat = (nowUs - info.presentationTimeUs) / 1000.0
+                if (lat in 0.0..500.0) { // sanity clamp
+                    latencyMs = latencyMs * 0.8 + lat * 0.2
+                }
+                c.releaseOutputBuffer(index, true)
+                frameCount++
+                val now = System.currentTimeMillis()
+                val dt = now - windowStart
+                if (dt >= 1000) {
+                    fps = frameCount * 1000.0 / dt
+                    frameCount = 0
+                    windowStart = now
+                }
+            } catch (_: Exception) {
+                // Codec already stopped/released between callback and use.
+            }
+        }
+
+        override fun onError(c: MediaCodec, e: MediaCodec.CodecException) {
+            running = false
+        }
+
+        override fun onOutputFormatChanged(c: MediaCodec, format: MediaFormat) {}
+    }
+
+    /** Safe from any thread (network, main, or callback thread). */
     fun stop() {
         running = false
         started = false
-        runCatching { codec?.stop() }
-        runCatching { codec?.release() }
+        synchronized(lock) { pending.clear(); freeInputs.clear() }
+        val c = codec
         codec = null
+        runCatching { c?.stop() }
+        runCatching { c?.release() }
+        callbackThread?.quitSafely()
+        callbackThread = null
     }
 }

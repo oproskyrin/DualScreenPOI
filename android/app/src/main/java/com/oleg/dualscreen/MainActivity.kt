@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ui: ClientUi
     private lateinit var root: FrameLayout
     private lateinit var surfaceView: SurfaceView
+    private lateinit var cursorOverlay: CursorOverlayView
     private lateinit var home: View
     private lateinit var homeStatus: TextView
     private lateinit var wifiList: LinearLayout
@@ -70,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     private var requestedHz = 120
     private var diagnostics = false
     private var audioEnabled = true
+    private var localCursor = true
 
     private var keyboardVisible = false
     private var settingsDialog: AlertDialog? = null
@@ -115,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         ui = ClientUi(this)
         diagnostics = prefs.getBoolean("diagnostics", false)
         audioEnabled = prefs.getBoolean("audio_enabled", true)
+        localCursor = prefs.getBoolean("local_cursor", true)
         requestedHz = prefs.getInt("requested_hz", 120)
         handleX = prefs.getFloat("toolbar_x", 1f)
         handleY = prefs.getFloat("toolbar_y", 0f)
@@ -123,6 +126,9 @@ class MainActivity : AppCompatActivity() {
         root = FrameLayout(this).apply { setBackgroundColor(ui.background) }
         surfaceView = SurfaceView(this)
         root.addView(surfaceView, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+        // Draw-only local cursor: right above the video, below every control.
+        cursorOverlay = CursorOverlayView(this).apply { setCursorEnabled(localCursor) }
+        root.addView(cursorOverlay, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         buildHome()
         buildStreamControls()
         buildKeyboard()
@@ -265,6 +271,7 @@ class MainActivity : AppCompatActivity() {
         state = next
         val busy = next == State.CONNECTING || next == State.RECONNECTING
         val live = next == State.STREAMING
+        if (!live) cursorOverlay.hide()
         home.visibility = if (busy || live) View.GONE else View.VISIBLE
         overlay.visibility = if (busy) View.VISIBLE else View.GONE
         if (live) setToolbarVisible(toolbarExpanded) else {
@@ -679,6 +686,16 @@ class MainActivity : AppCompatActivity() {
             }
         })
         ui.label(panel, "Задержка — от подачи кадра в декодер до его выдачи, не задержка Mac → планшет. Обратная связь для адаптивного битрейта работает всегда.", 13f, ui.muted)
+        panel.addView(Switch(this).apply {
+            text = "Локальный курсор"; setTextColor(ui.ink); isChecked = localCursor; minHeight = ui.dp(48)
+            contentDescription = "Локальный курсор"
+            setOnCheckedChangeListener { _, enabled ->
+                localCursor = enabled
+                prefs.edit().putBoolean("local_cursor", enabled).apply()
+                cursorOverlay.setCursorEnabled(enabled)
+            }
+        })
+        ui.label(panel, "Рисует указатель на планшете сразу под пальцем, пока изображение с Mac догоняет. На сам ввод не влияет.", 13f, ui.muted)
         settingsDialog = AlertDialog.Builder(this).setTitle("Настройки DualScreen").setView(ui.scroll(panel)).setPositiveButton("Готово", null).show()
     }
 
@@ -782,12 +799,18 @@ class MainActivity : AppCompatActivity() {
         val x = (event.x / w).coerceIn(0f, 1f).toDouble()
         val y = (event.y / h).coerceIn(0f, 1f).toDouble()
 
+        // Local cursor follows the primary pointer in root coordinates (the
+        // overlay spans the root while event coords are surfaceView-relative).
+        val cursorX = surfaceView.left + event.getX(0)
+        val cursorY = surfaceView.top + event.getY(0)
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touching = true
                 movedFar = false
                 downAt = System.currentTimeMillis()
                 downX = event.x; downY = event.y
+                cursorOverlay.show(cursorX, cursorY)
                 send("t" to "down", "x" to x, "y" to y)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -803,6 +826,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                cursorOverlay.move(cursorX, cursorY)
                 if (abs(event.x - downX) > 18 || abs(event.y - downY) > 18) movedFar = true
                 if (twoFinger && event.pointerCount >= 2) {
                     val dx = event.x - lastScroll.x
@@ -839,11 +863,13 @@ class MainActivity : AppCompatActivity() {
                 }
                 touching = false
                 twoFinger = false
+                cursorOverlay.hide()
             }
             MotionEvent.ACTION_CANCEL -> {
                 if (touching) send("t" to "up", "x" to x, "y" to y)
                 touching = false
                 twoFinger = false
+                cursorOverlay.hide()
             }
         }
         return true
