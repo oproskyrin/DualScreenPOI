@@ -524,10 +524,19 @@ final class UsbWatchdog {
         guard let out = run(["devices"]),
               out.contains("\tdevice") else { return } // authorized USB device present
         lastLaunch = Date()
-        print("[usb] tablet on USB: wiring adb reverse + launching client")
+
+        // App already running? Leave it alone — relaunching yanks it out of
+        // the user's hands every tick (can't minimize / can't quit).
+        // Its own auto-reconnect handles reconnection.
+        let running = run(["shell", "pidof", "com.oleg.dualscreen"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         _ = run(["reverse", "tcp:\(port)", "tcp:\(port)"])
-        _ = run(["shell", "am", "start", "-n", "com.oleg.dualscreen/.MainActivity",
-                 "--ez", "autoconnect", "true"])
+        if running != true {
+            print("[usb] tablet on USB: wiring adb reverse + launching client")
+            _ = run(["shell", "am", "start", "-n", "com.oleg.dualscreen/.MainActivity",
+                     "--ez", "autoconnect", "true",
+                     "--es", "addr", "127.0.0.1:\(port)"])
+        }
     }
 }
 

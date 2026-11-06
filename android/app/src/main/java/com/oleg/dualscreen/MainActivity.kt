@@ -202,8 +202,16 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         applyRefreshRate(hzOptions[hzIndex])
         hideSystemUi()
 
-        // `adb shell am start ... --ez autoconnect true` starts streaming
-        // immediately with the address from the field.
+        // `adb shell am start ... --ez autoconnect true --es addr host:port`
+        // starts streaming immediately with the address from the intent
+        // (the USB autopilot passes 127.0.0.1 so a stale Wi-Fi IP never
+        // blocks a wired connection).
+        val addrExtra = intent.getStringExtra("addr")
+        if (!addrExtra.isNullOrEmpty()) {
+            addressEdit.setText(addrExtra)
+            getSharedPreferences("ds", MODE_PRIVATE).edit()
+                .putString("addr", addrExtra).apply()
+        }
         if (intent.getBooleanExtra("autoconnect", false)) {
             surfaceView.post { connect() }
         }
@@ -232,6 +240,9 @@ class MainActivity : AppCompatActivity(), DsxpConnection.Listener {
         super.onNewIntent(intent)
         // autopilot relaunch while we're the running instance: if the
         // connection died while backgrounded, reconnect now
+        if (intent.hasExtra("addr")) {
+            intent.getStringExtra("addr")?.let { addressEdit.setText(it) }
+        }
         if (intent.getBooleanExtra("autoconnect", false) && !streaming) {
             surfaceView.post { connect() }
         }
