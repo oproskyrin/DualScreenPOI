@@ -228,7 +228,10 @@ final class HostApp {
         MenuBar(host: self)
         setupSignalHandler()
         print("[ds] ready (menu bar icon active)")
-        RunLoop.main.run()
+        // NSApp.run() — not RunLoop.main.run(): menu tracking in the status
+        // bar only works inside the real NSApplication event loop. Timers
+        // added to the main RunLoop keep firing either way.
+        NSApplication.shared.run()
     }
 
     // MARK: mode / display lifecycle
@@ -610,6 +613,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         quit.target = self
         menu.addItem(quit)
 
+        menu.autoenablesItems = false // targets are set; keep items clickable
         menu.delegate = self
         statusItem.menu = menu
 
