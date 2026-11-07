@@ -142,7 +142,9 @@ final class Pipeline {
         capturer.onAudio = nil
         encoder.onPacket = nil
         encoder.stop()
-        Task.detached { capt.stop() }
+        // Drop the capture's stream reference now, before releasing a virtual
+        // display during application termination. stopCapture itself is async.
+        capt.stop()
     }
 
     /// Live bitrate change without touching the running pipeline.
@@ -191,6 +193,10 @@ final class HostApp {
     private var injector: InputInjector?
     private(set) var pipeline: Pipeline?
     private var menuBar: MenuBar?
+    private let terminationPreparation = TerminationPreparation()
+    private let audioPresence = AudioDevicePresence()
+    private var timers: [Timer] = []
+    var updater: AppUpdater?
     private let arrangement = DisplayArrangement()
     private var signalSources: [DispatchSourceSignal] = []
     private let rates: [Double] = [144, 120, 90, 60]
@@ -207,22 +213,28 @@ final class HostApp {
 
     func run() {
         HostLog.shared.write("host starting mode=\(settings.mode.rawValue) requestedFps=\(settings.fps)")
-        let inputAccess = CGPreflightPostEventAccess()
-        HostLog.shared.write("input permission granted=\(inputAccess)")
-        if !inputAccess { _ = CGRequestPostEventAccess() }
-        arrangement.onChange = { [weak self] in self?.injector?.refreshBounds() }
-        // Screen Recording permission (TCC). Prompts on first run.
-        if !CGPreflightScreenCaptureAccess() {
-            print("[ds] requesting Screen Recording permission…")
-            _ = CGRequestScreenCaptureAccess()
-        }
-
+        // Detect an old CLI host before asking for permissions or creating a display.
         wireServer()
         do {
             try server.start(port: settings.port)
         } catch {
-            FileHandle.standardError.write("FATAL: cannot listen on port \(settings.port): \(error)\n".data(using: .utf8)!)
+            let message = "Не удалось открыть порт \(settings.port). Возможно, уже работает другой DualScreenHost (в том числе старая CLI-версия). Завершите его и откройте DualScreen снова.\n\(error)"
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            if Bundle.main.bundleURL.pathExtension == "app" {
+                let alert = NSAlert(); alert.messageText = "DualScreen уже запущен или порт занят"
+                alert.informativeText = message; alert.runModal()
+            }
+            prepareForTermination()
             exit(1)
+        }
+        audioPresence.start()
+        let inputAccess = CGPreflightPostEventAccess()
+        HostLog.shared.write("input permission granted=\(inputAccess)")
+        if !inputAccess { _ = CGRequestPostEventAccess() }
+        arrangement.onChange = { [weak self] in self?.injector?.refreshBounds() }
+        if !CGPreflightScreenCaptureAccess() {
+            print("[ds] requesting Screen Recording permission…")
+            _ = CGRequestScreenCaptureAccess()
         }
 
         applyMode()
@@ -232,11 +244,13 @@ final class HostApp {
             self?.sendStats()
         }
         RunLoop.main.add(statsTimer, forMode: .common)
+        timers.append(statsTimer)
 
         // USB autopilot: plug the cable -> everything connects by itself
         if let usb = UsbWatchdog(server: server, port: settings.port) {
             let usbTimer = Timer(timeInterval: 2, repeats: true) { _ in usb.tick() }
             RunLoop.main.add(usbTimer, forMode: .common)
+            timers.append(usbTimer)
         }
 
         // Strong reference: the status item itself is retained by the system
@@ -522,21 +536,40 @@ final class HostApp {
         for number in [SIGINT, SIGTERM] {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-            source.setEventHandler { [weak self] in self?.shutdown() }
+            source.setEventHandler { [weak self] in
+                self?.prepareForTermination()
+                self?.shutdown()
+            }
             source.resume()
             signalSources.append(source)
         }
     }
 
+    /// No exit()/terminate() here: Sparkle and normal NSApplication shutdown
+    /// must share cleanup without recursive termination or bypassing its relaunch.
+    func prepareForTermination() {
+        precondition(Thread.isMainThread)
+        terminationPreparation.run {
+            print("\n[ds] shutting down…")
+            HostLog.shared.write("host shutdown requested")
+            audioPresence.stop()
+            timers.forEach { $0.invalidate() }; timers.removeAll()
+            signalSources.forEach { $0.cancel() }; signalSources.removeAll()
+            server.onControl = nil; server.onInput = nil
+            server.onClientStats = nil; server.onClientConnected = nil; server.onClientDisconnected = nil
+            injector?.reset(); injector = nil
+            arrangement.detach()
+            pipeline?.reset(); pipeline = nil
+            server.stop()
+            if virtualCreated { vd_release_display(); virtualCreated = false }
+            displayID = 0
+            HostLog.shared.flush()
+        }
+    }
+
     func shutdown() {
-        print("\n[ds] shutting down…")
-        HostLog.shared.write("host shutdown requested")
-        injector?.reset()
-        arrangement.detach()
-        pipeline?.reset()
-        if virtualCreated { vd_release_display() }
-        HostLog.shared.flush()
-        exit(0)
+        precondition(Thread.isMainThread)
+        NSApplication.shared.terminate(nil)
     }
 }
 
@@ -547,9 +580,11 @@ final class UsbWatchdog {
     private let server: FrameServer
     private let port: UInt16
     private var lastLaunch = Date.distantPast
+    private var busy = false // main-thread only
+    private let queue = DispatchQueue(label: "ds.usb-watchdog", qos: .utility)
 
     init?(server: FrameServer, port: UInt16) {
-        let candidates = ["/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb"]
+        let candidates = AppRuntimePolicy.adbCandidates(resourceURL: Bundle.main.url(forResource: "adb", withExtension: nil))
         guard let adb = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             print("[usb] adb not found; automatic USB flow disabled")
             return nil
@@ -565,13 +600,30 @@ final class UsbWatchdog {
         p.arguments = arguments
         let pipe = Pipe()
         p.standardOutput = pipe
-        p.standardError = Pipe()
-        do { try p.run(); p.waitUntilExit() } catch { return nil }
+        p.standardError = FileHandle.nullDevice
+        let ended = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in ended.signal() }
+        do { try p.run() } catch { return nil }
+        if ended.wait(timeout: .now() + 4) == .timedOut {
+            p.terminate()
+            if ended.wait(timeout: .now() + 1) == .timedOut { kill(p.processIdentifier, SIGKILL) }
+            return nil
+        }
         guard p.terminationStatus == 0 else { return nil }
         return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
     }
 
     func tick() {
+        precondition(Thread.isMainThread)
+        guard !busy else { return }
+        busy = true
+        queue.async { [self] in
+            performTick()
+            DispatchQueue.main.async { [self] in busy = false }
+        }
+    }
+
+    private func performTick() {
         guard !server.hasClient else { return }
         guard Date().timeIntervalSince(lastLaunch) > 8 else { return }
         guard let out = run(["devices"]),
@@ -603,7 +655,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     init(host: HostApp) {
         self.host = host
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusLine = NSMenuItem(title: "…", action: nil, keyEquivalent: "")
         super.init()
         let app = NSApplication.shared
@@ -616,6 +667,15 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
         statusLine.isEnabled = false
         menu.addItem(statusLine)
+        menu.addItem(.separator())
+        let about = NSMenuItem(title: "О программе", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self; menu.addItem(about)
+        let updates = NSMenuItem(title: "Проверить обновления…", action: nil, keyEquivalent: "")
+        updates.isEnabled = false
+        host.updater?.attach(to: updates)
+        menu.addItem(updates)
+        let logs = NSMenuItem(title: "Открыть журнал", action: #selector(openLog), keyEquivalent: "")
+        logs.target = self; menu.addItem(logs)
         menu.addItem(.separator())
 
         let modeMenu = NSMenu(title: "Режим")
@@ -705,13 +765,31 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleAutostart(_ sender: NSMenuItem) {
-        if LaunchAgent.isInstalled {
-            LaunchAgent.uninstall()
-        } else {
-            LaunchAgent.install()
+        do {
+            if LaunchAgent.isInstalled { try LaunchAgent.uninstall() }
+            else { try LaunchAgent.install() }
+        } catch {
+            let alert = NSAlert(); alert.messageText = "Не удалось изменить автостарт"
+            alert.informativeText = error.localizedDescription; alert.runModal()
         }
         sender.state = LaunchAgent.isInstalled ? .on : .off
         refreshStatus()
+    }
+
+    @objc private func showAbout() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "CLI (без app bundle)"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "DualScreen", .applicationVersion: version, .version: build,
+            .credits: NSAttributedString(string: "Планшет как второй экран Mac\nЖурнал: ~/Library/Logs/DualScreen/host.log")
+        ])
+    }
+
+    @objc private func openLog() {
+        HostLog.shared.flush()
+        let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DualScreen/host.log")
+        NSWorkspace.shared.activateFileViewerSelecting([log])
     }
 
     @objc private func quit() {
@@ -722,6 +800,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
 extension MenuBar {
     func menuNeedsUpdate(_ menu: NSMenu) {
+        host.updater?.refreshMenuItem()
         for item in menu.items {
             guard let sub = item.submenu else { continue }
             for subItem in sub.items {
@@ -740,63 +819,54 @@ extension MenuBar {
     }
 }
 
-// MARK: - LaunchAgent
+// MARK: - entry point
 
-enum LaunchAgent {
-    static var plistPath: String {
-        "\(NSHomeDirectory())/Library/LaunchAgents/com.oleg.dualscreen.host.plist"
-    }
-    static var isInstalled: Bool {
-        FileManager.default.fileExists(atPath: plistPath)
-    }
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
 
-    private static var binaryPath: String {
-        var path = CommandLine.arguments[0]
-        if !path.hasPrefix("/") {
-            path = FileManager.default.currentDirectoryPath + "/" + path
-        }
-        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+// Device-free modes must branch before HostApp construction: no TCC prompts,
+// virtual displays, input injection, TCP listener, USB or login-agent changes.
+if args.contains("--app-smoke-test") {
+    let lifecycle = AppLifecycle()
+    application.delegate = lifecycle
+    let updater = lifecycle.initializeUpdater()
+    DispatchQueue.main.async {
+        let result = updater.smokeResult()
+        printJSON(result)
+        let valid = result["validBundle"] as? Bool == true && result["updaterInitialized"] as? Bool == true && updater.startupError == nil
+        if !valid { exit(2) }
+        application.terminate(nil)
     }
-
-    static func install() {
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <plist version="1.0">
-        <dict>
-            <key>Label</key><string>com.oleg.dualscreen.host</string>
-            <key>ProgramArguments</key>
-            <array>
-                <string>\(binaryPath)</string>
-            </array>
-            <key>RunAtLoad</key><true/>
-            <key>KeepAlive</key><true/>
-        </dict>
-        </plist>
-        """
-        try? plist.write(toFile: plistPath, atomically: true, encoding: .utf8)
-        run("/bin/launchctl", ["unload", plistPath])
-        run("/bin/launchctl", ["load", plistPath])
-        print("[ds] LaunchAgent installed: \(plistPath)")
-    }
-
-    static func uninstall() {
-        run("/bin/launchctl", ["unload", plistPath])
-        try? FileManager.default.removeItem(atPath: plistPath)
-        print("[ds] LaunchAgent removed")
-    }
-
-    @discardableResult
-    private static func run(_ path: String, _ arguments: [String]) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = arguments
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do { try p.run(); p.waitUntilExit(); return true } catch { return false }
-    }
+    withExtendedLifetime((lifecycle, updater)) { application.run() }
+    exit(0)
 }
 
-// MARK: - entry point
+if args.contains("--updater-test") {
+    do { try UpdaterTestSession.begin() }
+    catch { printJSON(["error": error.localizedDescription]); exit(2) }
+}
+if args.contains("--updater-test") || UpdaterTestSession.isActive {
+    let lifecycle = AppLifecycle()
+    application.delegate = lifecycle
+    if !lifecycle.runUpdaterTest() { exit(2) }
+    exit(0)
+}
+
+// Finder / `open` already reuse the running application; this also handles a
+// direct invocation of Contents/MacOS/DualScreenHost before any server startup.
+if Bundle.main.bundleIdentifier == AppRuntimePolicy.bundleIdentifier,
+   let existing = NSRunningApplication.runningApplications(withBundleIdentifier: AppRuntimePolicy.bundleIdentifier)
+        .first(where: { $0.processIdentifier != getpid() && !$0.isTerminated }) {
+    existing.activate(options: [.activateIgnoringOtherApps])
+    exit(0)
+}
+BundledPreferences.migrateKnownLegacyPlacement()
+var autostartMigrationError: Error?
+do { try LaunchAgent.migrateLegacyIfNeeded() }
+catch {
+    autostartMigrationError = error
+    FileHandle.standardError.write(Data(("[autostart] " + error.localizedDescription + "\n").utf8))
+}
 
 var settings = HostApp.Settings(
     mode: args.contains("--mirror") ? .mirror : .extend,
@@ -824,4 +894,13 @@ if !logicalArg.isEmpty {
 
 print("[ds] DualScreenHost starting: mode=\(settings.mode.rawValue) panel=\(settings.panelW)x\(settings.panelH), \(settings.fps)fps, \(settings.bitrateMbps) Mbps, port \(settings.port)")
 let hostApp = HostApp(settings: settings)
+let lifecycle = AppLifecycle(isStreaming: { hostApp.server.hasClient }, prepare: { hostApp.prepareForTermination() })
+application.delegate = lifecycle
+if let error = autostartMigrationError {
+    let alert = NSAlert(); alert.messageText = "Требуется исправить автостарт"
+    alert.informativeText = error.localizedDescription + "\nПроверка обновлений отключена, пока старый самоперезапускающийся LaunchAgent не будет отключён."
+    if Bundle.main.bundleURL.pathExtension == "app" { alert.runModal() }
+} else {
+    hostApp.updater = lifecycle.initializeUpdater()
+}
 hostApp.run()

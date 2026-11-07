@@ -1,0 +1,30 @@
+#!/bin/bash
+# Installer upgrade: stop only this installed bundle, never a repository host.
+set -euo pipefail
+volume="${3:-/}"
+if [[ "$volume" != "/" ]]; then
+  echo "DualScreen must be installed on the startup volume." >&2
+  exit 1
+fi
+target="/Applications/DualScreen.app/Contents/MacOS/DualScreenHost"
+matching_pids() {
+  local pid command
+  while read -r pid command; do
+    [[ "$command" == "$target" ]] && printf '%s\n' "$pid"
+  done < <(/bin/ps -axo pid=,comm=)
+  return 0
+}
+# Recheck the executable path before each signal to avoid unrelated processes.
+while read -r pid; do
+  [[ -n "$pid" ]] || continue
+  command="$(/bin/ps -p "$pid" -o comm= 2>/dev/null || true)"
+  if [[ "$command" == "$target" ]]; then
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+done < <(matching_pids)
+for ((attempt = 0; attempt < 20; attempt++)); do
+  [[ -z "$(matching_pids)" ]] && exit 0
+  /bin/sleep 1
+done
+echo "DualScreen is still running. Quit DualScreen and retry installation." >&2
+exit 1

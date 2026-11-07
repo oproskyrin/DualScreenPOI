@@ -14,6 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve package version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            VERSION=${GITHUB_REF_NAME#v}
+          else
+            VERSION=$(python3 -c 'import pathlib,re; print(re.search(r"versionName = \"([^\"]+)\"", pathlib.Path("android/app/build.gradle.kts").read_text()).group(1))')
+          fi
+          echo "DS_VERSION=$VERSION" >> "$GITHUB_ENV"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -35,16 +44,24 @@ jobs:
       - name: Build DualScreenHost
         run: swift build -c release --package-path host
 
+      - name: Test bundled application lifecycle
+        run: |
+          bash scripts/test-host-app.sh
+          python3 scripts/test-host-app-smoke.py
+          python3 -m unittest discover -s tests -p test_macos_release.py -v
+
       - name: Package host
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          cp host/.build/release/DualScreenHost .
-          tar -czf DualScreenHost-v${VERSION}-macos-arm64.tar.gz DualScreenHost
+          mkdir -p dist/legacy-host
+          cp host/.build/release/DualScreenHost dist/legacy-host/
+          ditto host/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework dist/legacy-host/Sparkle.framework
+          cp host/.build/artifacts/sparkle/Sparkle/LICENSE dist/legacy-host/Sparkle-LICENSE.txt
+          tar -czf DualScreenHost-v${DS_VERSION}-macos-arm64.tar.gz -C dist/legacy-host DualScreenHost Sparkle.framework Sparkle-LICENSE.txt
 
       # ---- Android client (same recipe as local builds) ----
       - name: Install Android toolchain
         run: |
-          brew install -q gradle --cask android-commandlinetools || brew install -q gradle
+          brew list gradle &>/dev/null || brew install -q gradle
           brew list --cask android-commandlinetools &>/dev/null || brew install -q --cask android-commandlinetools
           export JAVA_HOME=${JAVA_HOME_17_X64:-$JAVA_HOME}
           SDK=/opt/homebrew/share/android-commandlinetools
@@ -52,14 +69,31 @@ jobs:
           $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK "platforms;android-35" "build-tools;35.0.0" "platform-tools" >/dev/null
           echo "sdk.dir=$SDK" > android/local.properties
 
+      - name: Build native audio component
+        run: |
+          git clone --quiet --no-checkout https://github.com/ExistentialAudio/BlackHole.git "$RUNNER_TEMP/BlackHole"
+          BLACKHOLE_SOURCE="$RUNNER_TEMP/BlackHole" BUILD_SCRATCH_ROOT="$RUNNER_TEMP" bash scripts/build-dualscreen-audio.sh
+
+      - name: Test dynamic audio device availability
+        run: |
+          BLACKHOLE_SOURCE="$RUNNER_TEMP/BlackHole" BUILD_SCRATCH_ROOT="$RUNNER_TEMP" bash scripts/test-host-audio-presence.sh --hal
+
+      - name: Build and verify complete Mac installer
+        env:
+          BUILD_SCRATCH_ROOT: ${{ runner.temp }}
+        run: |
+          bash scripts/build-macos-app.sh --version "$DS_VERSION" --host-binary host/.build/release/DualScreenHost --adb /opt/homebrew/share/android-commandlinetools/platform-tools/adb
+          DUALSCREEN_TEST_ARTIFACTS=dist/macos python3 -m unittest discover -s tests -p test_macos_packaging.py -v
+          # The signed appcast and immutable native assets are published from the
+          # maintainer's Mac by scripts/macos_release.py; private keys stay in Keychain.
+
       - name: Build APK
         working-directory: android
         run: gradle assembleRelease test lint --no-daemon -q
 
       - name: Package APK
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          cp android/app/build/outputs/apk/release/app-release.apk DualScreenClient-v${VERSION}.apk
+          cp android/app/build/outputs/apk/release/app-release.apk DualScreenClient-v${DS_VERSION}.apk
 
       # ---- GitHub Release (release assets bypass the artifact quota) ----
       - name: Create release

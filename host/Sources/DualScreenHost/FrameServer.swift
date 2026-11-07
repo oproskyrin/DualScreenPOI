@@ -49,9 +49,15 @@ final class FrameServer {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        let startup = ListenerStartup()
         listener.stateUpdateHandler = { [weak self] state in
-            if case .failed(let error) = state {
+            switch state {
+            case .ready:
+                startup.resolve(nil)
+            case .failed(let error), .waiting(let error):
                 self?.log.write("server listener failed: \(error)")
+                startup.resolve(error)
+            default: break
             }
         }
         // Announce the host on the local network: Android client discovers
@@ -70,6 +76,38 @@ final class FrameServer {
         self.listener = listener
         listener.start(queue: queue)
         log.write("server listener starting port=\(port)")
+        guard startup.semaphore.wait(timeout: .now() + 5) == .success else {
+            stop()
+            throw ServerError.listenerFailed(NWError.posix(.ETIMEDOUT))
+        }
+        if let error = queue.sync(execute: { startup.error }) {
+            stop()
+            throw ServerError.listenerFailed(error)
+        }
+    }
+
+    /// Main-thread caller. Drain queued sends and close the old listener before
+    /// Sparkle terminates/relaunches the process; safe after partial startup.
+    func stop() {
+        queue.sync {
+            listener?.newConnectionHandler = nil
+            listener?.stateUpdateHandler = nil
+            listener?.cancel()
+            listener = nil
+            if let connection { teardown(connection, reason: "host stopping") }
+        }
+    }
+
+    private final class ListenerStartup {
+        let semaphore = DispatchSemaphore(value: 0)
+        var error: Error?
+        private var resolved = false
+        func resolve(_ error: Error?) {
+            guard !resolved else { return }
+            resolved = true
+            self.error = error
+            semaphore.signal()
+        }
     }
 
     private func accept(_ conn: NWConnection) {
