@@ -16,6 +16,14 @@ enum AppRuntimePolicy {
         (resourceURL.map { [$0.path] } ?? []) + ["/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb"]
     }
 
+    /// UserDefaults(suiteName:) returns nil when the suite name equals the
+    /// running app's own bundle identifier (v1.0.0 launch crash, SIGTRAP).
+    /// Standard defaults already ARE that domain for the bundled app, and for
+    /// the CLI the explicit suite still resolves to the shared plist.
+    static func sharedDefaults() -> UserDefaults {
+        UserDefaults(suiteName: bundleIdentifier) ?? .standard
+    }
+
     // DisplayArrangement already uses the stable bundle-ID suite, including CLI.
     // Only import the one known historical key; never import Sparkle preferences.
     static func migratedPreferences(current: [String: Any], legacy: [String: Any]) -> [String: Any] {

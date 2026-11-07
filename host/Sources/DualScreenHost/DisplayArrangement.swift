@@ -58,7 +58,7 @@ struct DisplayPlacementAnchor {
 final class DisplayPlacementStore {
     private let defaults: UserDefaults
     private let key = "tabletDisplayPlacement.v1"
-    init(defaults: UserDefaults = UserDefaults(suiteName: "com.oleg.dualscreen.host")!) {
+    init(defaults: UserDefaults = AppRuntimePolicy.sharedDefaults()) {
         self.defaults = defaults
     }
     func load() -> SavedDisplayPlacement? {

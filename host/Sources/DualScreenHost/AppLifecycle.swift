@@ -98,7 +98,7 @@ enum BundledPreferences {
         guard current["legacyPreferenceMigration.v1"] as? Bool != true else { return }
         let legacy = defaults.persistentDomain(forName: "DualScreenHost") ?? [:]
         let migrated = AppRuntimePolicy.migratedPreferences(current: current, legacy: legacy)
-        let target = UserDefaults(suiteName: AppRuntimePolicy.bundleIdentifier)!
+        let target = AppRuntimePolicy.sharedDefaults()
         if current["tabletDisplayPlacement.v1"] == nil, let data = migrated["tabletDisplayPlacement.v1"] as? Data {
             target.set(data, forKey: "tabletDisplayPlacement.v1")
         }

@@ -827,6 +827,11 @@ application.setActivationPolicy(.accessory)
 // Device-free modes must branch before HostApp construction: no TCC prompts,
 // virtual displays, input injection, TCP listener, USB or login-agent changes.
 if args.contains("--app-smoke-test") {
+    // Regression: these run before any UI in the real bundle context, where
+    // UserDefaults(suiteName:) may return nil for the app's own bundle id.
+    // A force-unwrap here was an instant launch crash (SIGTRAP) in v1.0.0.
+    BundledPreferences.migrateKnownLegacyPlacement()
+    _ = DisplayPlacementStore()
     let lifecycle = AppLifecycle()
     application.delegate = lifecycle
     let updater = lifecycle.initializeUpdater()
