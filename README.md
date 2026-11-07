@@ -56,12 +56,12 @@
 
 Откройте [последний опубликованный релиз](https://github.com/oproskyrin/DualScreenPOI/releases/latest) и скачайте оба файла:
 
-| Устройство | Что выбрать для v1.0.0 | Состав |
+| Устройство | Что выбрать для v1.0.1 | Состав |
 |---|---|---|
-| Mac с Apple Silicon | [Скачать `.pkg`](https://github.com/oproskyrin/DualScreenPOI/releases/download/v1.0.0/DualScreen-v1.0.0-macos-arm64.pkg) · `DualScreen-v1.0.0-macos-arm64.pkg` | Приложение, USB-компонент `adb` и аудиодрайвер DualScreenAudio |
-| Android-планшет | [Скачать `.apk`](https://github.com/oproskyrin/DualScreenPOI/releases/download/v1.0.0/DualScreenClient-v1.0.0.apk) · `DualScreenClient-v1.0.0.apk` | Клиент для Android 8+ с аппаратным HEVC-декодером |
+| Mac с Apple Silicon | [Скачать `.pkg`](https://github.com/oproskyrin/DualScreenPOI/releases/download/v1.0.1/DualScreen-v1.0.1-macos-arm64.pkg) · `DualScreen-v1.0.1-macos-arm64.pkg` | Приложение, USB-компонент `adb` и аудиодрайвер DualScreenAudio |
+| Android-планшет | [Скачать `.apk`](https://github.com/oproskyrin/DualScreenPOI/releases/download/v1.0.1/DualScreenClient-v1.0.1.apk) · `DualScreenClient-v1.0.1.apk` | Клиент для Android 8+ с аппаратным HEVC-декодером |
 
-В таблице закреплены файлы первого полного комплекта v1.0.0; новые версии доступны на странице последнего релиза. Архив `DualScreenHost-…tar.gz` с отдельным бинарным файлом не заменяет установщик. ZIP приложения предназначен для обновлений, не для первой установки со звуком.
+В таблице закреплены файлы первого полного комплекта v1.0.1; новые версии доступны на странице последнего релиза. Архив `DualScreenHost-…tar.gz` с отдельным бинарным файлом не заменяет установщик. ZIP приложения предназначен для обновлений, не для первой установки со звуком.
 
 > **О подписи macOS.** Приложение использует ad-hoc подпись, установщик не подписан Developer ID и не нотарифицирован Apple. Gatekeeper может заблокировать открытие. Это не установщик с подтверждённым беспрепятственным запуском на любом Mac.
 
