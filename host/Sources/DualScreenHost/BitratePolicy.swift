@@ -7,15 +7,17 @@ import Foundation
 /// backlog, so it is preferred: reacting to decoder latency alone cut the
 /// bitrate while the real bottleneck (SCK backlog) stayed untouched.
 enum BitratePolicy {
-    static let floorBps = 8_000_000
+    /// Never fall below half the configured target: cutting the bitrate does
+    /// not reduce capture->render latency (that one tracks fps and encoder
+    /// throughput), and a 8 Mbit/s floor only made the picture worse.
+    static func floorBps(maxBps: Int) -> Int { max(maxBps / 2, 8_000_000) }
     // Bands are deliberately wide: capture->render jitters by 10-20 ms at
-    // 2944x1840, and a policy that treats 45 ms as congestion never climbs
-    // back off the 8 Mbit/s floor. Only a real backlog (well past 100 ms)
-    // counts as congestion.
+    // 2944x1840, and a policy that treats 60 ms as congestion would pin the
+    // bitrate at the floor forever.
     /// Latency above this means queues are filling: back off hard.
-    static let congestedMs = 120.0
+    static let congestedMs = 150.0
     /// Latency in this band is borderline: back off gently.
-    static let elevatedMs = 85.0
+    static let elevatedMs = 100.0
     /// Below this the pipe is healthy: allow a step up.
     static let healthyMs = 60.0
 
@@ -52,8 +54,9 @@ enum BitratePolicy {
         } else {
             windows = 0
         }
-        next = max(next, floorBps)
-        next = min(next, max(maxBps, floorBps))
+        let floor = floorBps(maxBps: maxBps)
+        next = max(next, floor)
+        next = min(next, max(maxBps, floor))
         return Decision(bitrateBps: next, goodWindows: windows, changed: next != currentBps)
     }
 }

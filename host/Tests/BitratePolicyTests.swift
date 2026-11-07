@@ -12,7 +12,7 @@ struct BitratePolicyTests {
         // End-to-end latency wins over decoder latency: a congested pipe must
         // cut, even when the decoder itself looks fast.
         let congested = BitratePolicy.next(currentBps: 60_000_000, maxBps: 60_000_000,
-                                           latencyMs: 150, decoderMs: 6, goodWindows: 2)
+                                           latencyMs: 300, decoderMs: 6, goodWindows: 2)
         check(congested.bitrateBps == 45_000_000, "congested end-to-end latency cuts 25%")
         check(congested.goodWindows == 0, "congestion resets the good-window counter")
 
@@ -23,7 +23,7 @@ struct BitratePolicyTests {
 
         // Without end-to-end telemetry fall back to the decoder metric.
         let fallback = BitratePolicy.next(currentBps: 60_000_000, maxBps: 60_000_000,
-                                          latencyMs: nil, decoderMs: 150, goodWindows: 0)
+                                          latencyMs: nil, decoderMs: 300, goodWindows: 0)
         check(fallback.bitrateBps == 45_000_000, "decoder latency is the fallback signal")
 
         // No signal at all: hold, never invent a change.
@@ -42,20 +42,20 @@ struct BitratePolicyTests {
 
         // The floor and ceiling both bind.
         let floor = BitratePolicy.next(currentBps: 8_500_000, maxBps: 60_000_000,
-                                       latencyMs: 400, decoderMs: 6, goodWindows: 0)
-        check(floor.bitrateBps == 8_000_000, "bitrate never drops below the floor")
+                                       latencyMs: 900, decoderMs: 6, goodWindows: 0)
+        check(floor.bitrateBps == 30_000_000, "bitrate never drops below half the target")
         let ceiling = BitratePolicy.next(currentBps: 60_000_000, maxBps: 60_000_000,
                                          latencyMs: 20, decoderMs: 6, goodWindows: 2)
         check(ceiling.bitrateBps == 60_000_000, "bitrate never exceeds the ceiling")
 
         // Elevation band backs off gently instead of slamming the pipe.
         let elevated = BitratePolicy.next(currentBps: 60_000_000, maxBps: 60_000_000,
-                                          latencyMs: 95, decoderMs: 6, goodWindows: 1)
+                                          latencyMs: 120, decoderMs: 6, goodWindows: 1)
         check(elevated.bitrateBps == 54_000_000, "elevated latency cuts 10%")
 
         // Mid-band (between healthy and elevated) neither grows nor cuts.
         let mid = BitratePolicy.next(currentBps: 60_000_000, maxBps: 60_000_000,
-                                     latencyMs: 70, decoderMs: 6, goodWindows: 2)
+                                     latencyMs: 80, decoderMs: 6, goodWindows: 2)
         check(mid.bitrateBps == 60_000_000 && mid.goodWindows == 0, "mid band holds and resets windows")
 
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }

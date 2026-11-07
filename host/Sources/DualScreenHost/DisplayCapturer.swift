@@ -52,7 +52,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.queueDepth = Int(ProcessInfo.processInfo.environment["DS_SCK_DEPTH"] ?? "") ?? 4 // Capture surface budget; A/B via DS_SCK_DEPTH.
+        config.queueDepth = Int(ProcessInfo.processInfo.environment["DS_SCK_DEPTH"] ?? "") ?? 2 // Capture surface budget; A/B via DS_SCK_DEPTH.
         config.showsCursor = true // cursor must be visible on the tablet
         config.width = pixelWidth
         config.height = pixelHeight
