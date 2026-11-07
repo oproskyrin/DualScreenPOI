@@ -53,8 +53,10 @@ def make_icon(source, destination, scratch):
 
 def sign_own(path, identity):
     args = ["/usr/bin/codesign", "--force", "--sign", identity]
-    # Ad-hoc local apps must not impose library validation on vendor Sparkle.
-    if identity != "-":
+    # Ad-hoc and the local self-signed identity ("DualScreen Local …") have no
+    # Apple-issued timestamp service; hardened runtime would also block the
+    # vendor-signed Sparkle framework under library validation.
+    if identity != "-" and not identity.startswith("DualScreen Local"):
         args += ["--timestamp", "--options", "runtime"]
     run(*args, path)
 

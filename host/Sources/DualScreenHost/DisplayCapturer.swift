@@ -18,6 +18,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     private var audioDiagnosticTime = Date.distantPast
     private let audioRoute = TabletAudioRoute()
     private static var loggedFirstFrame = false
+    private static var debugFrames = 0
 
     var onFrame: ((CVImageBuffer, CMTime) -> Void)?
     /// Raw 16-bit LE 48kHz stereo PCM chunks of system audio.
@@ -51,7 +52,7 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.queueDepth = 8 // Capture surface budget, not a fixed eight-frame presentation delay.
+        config.queueDepth = Int(ProcessInfo.processInfo.environment["DS_SCK_DEPTH"] ?? "") ?? 8 // Capture surface budget; A/B via DS_SCK_DEPTH.
         config.showsCursor = true // cursor must be visible on the tablet
         config.width = pixelWidth
         config.height = pixelHeight
@@ -86,6 +87,14 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
                 Self.loggedFirstFrame = true
                 print("[capture] first frame: \(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer)) px")
             }
+            // A/B instrumentation: how long a frame sat inside ScreenCaptureKit.
+            if getenv("DS_SCK_DEBUG") != nil, Self.debugFrames % 60 == 0 {
+                // PTS is in the host mach-time domain, not Unix time.
+                let now = CMClockGetTime(CMClockGetHostTimeClock())
+                let deltaMs = CMTimeGetSeconds(CMTimeSubtract(now, sampleBuffer.presentationTimeStamp)) * 1000
+                print(String(format: "[capture] pts→callback %.1f ms", deltaMs))
+            }
+            Self.debugFrames += 1
             onFrame?(imageBuffer, sampleBuffer.presentationTimeStamp)
         case .audio:
             guard audioRoute.shouldForward() else { return }

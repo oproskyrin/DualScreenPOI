@@ -115,10 +115,24 @@ void *vtenc_create(uint32_t width, uint32_t height,
     enc->cb = cb;
     enc->ctx = ctx;
 
-    OSStatus err = VTCompressionSessionCreate(
-        NULL, (int32_t)width, (int32_t)height,
-        kCMVideoCodecType_HEVC, NULL, NULL, NULL,
-        packet_cb, enc, &enc->session);
+    OSStatus err;
+    if (getenv("DS_LOWLAT") != NULL) {
+        // Low-latency rate control is an encoder *specification* at creation.
+        const void *keys[1] = { kVTVideoEncoderSpecification_EnableLowLatencyRateControl };
+        const void *vals[1] = { kCFBooleanTrue };
+        CFDictionaryRef spec = CFDictionaryCreate(NULL, keys, vals, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        err = VTCompressionSessionCreate(
+            NULL, (int32_t)width, (int32_t)height,
+            kCMVideoCodecType_HEVC, spec, NULL, NULL,
+            packet_cb, enc, &enc->session);
+        CFRelease(spec);
+    } else {
+        err = VTCompressionSessionCreate(
+            NULL, (int32_t)width, (int32_t)height,
+            kCMVideoCodecType_HEVC, NULL, NULL, NULL,
+            packet_cb, enc, &enc->session);
+    }
     if (err != noErr || enc->session == NULL) {
         fprintf(stderr, "[vtenc] session create failed: %d\n", err);
         free(enc);
@@ -126,6 +140,11 @@ void *vtenc_create(uint32_t width, uint32_t height,
     }
 
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+    // A/B (DS_LOWLAT=1): Apple's low-latency rate control shapes the VBV for
+    // streaming instead of file encoding; measured via the 0x05 timing sidecar.
+    if (getenv("DS_LOWLAT") != NULL) {
+        VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue);
+    }
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel);
     setNum(enc->session, kVTCompressionPropertyKey_MaxFrameDelayCount, numInt(0));
