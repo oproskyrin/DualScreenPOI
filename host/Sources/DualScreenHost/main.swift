@@ -6,7 +6,7 @@ import CGVirtualDisplayShim
 // DualScreenHost — turns an Android tablet into a second display for macOS.
 //
 // Pipeline: CGVirtualDisplay (private API, extend) or the main display
-// (mirror) -> ScreenCaptureKit -> VideoToolbox HEVC (hardware, realtime) ->
+// (mirror) -> ScreenCaptureKit -> VideoToolbox HEVC/H264 (realtime) ->
 // TCP (USB via `adb reverse`, Wi-Fi with mDNS). Touch input flows back as
 // JSON and is injected with CGEvent. Runs as a menu bar app; modes and
 // quality are switchable live from the menu or from the tablet.
@@ -28,6 +28,7 @@ final class Pipeline {
     let timing = TimingFIFO()
     private var started = false
     private var encoderReady = false
+    private(set) var codec: VideoCodec?
     private let lock = NSLock()
     private var fpsWindowStart = Date()
     private var fpsCount = 0
@@ -37,16 +38,16 @@ final class Pipeline {
     private var lastRestart = Date.distantPast
     private(set) var currentFps: Double = 0
 
-    /// Walks Annex-B NALs and prints their HEVC types (32=VPS, 33=SPS, 34=PPS).
+    /// Prints negotiated-codec NAL types (HEVC: 32/33/34, AVC: 7/8).
     func dumpNalTypes(_ data: Data) {
         var types: [Int] = []
         var i = data.startIndex
         while i < data.endIndex - 4 {
             if data[i] == 0, data[i + 1] == 0, data[i + 2] == 0, data[i + 3] == 1 {
-                if i + 4 < data.endIndex { types.append(Int((data[i + 4] & 0x7E) >> 1)) }
+                if i + 4 < data.endIndex { types.append(codec == .h264 ? Int(data[i + 4] & 31) : Int((data[i + 4] & 0x7E) >> 1)) }
                 i += 4
             } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
-                if i + 3 < data.endIndex { types.append(Int((data[i + 3] & 0x7E) >> 1)) }
+                if i + 3 < data.endIndex { types.append(codec == .h264 ? Int(data[i + 3] & 31) : Int((data[i + 3] & 0x7E) >> 1)) }
                 i += 3
             } else {
                 i += 1
@@ -114,10 +115,13 @@ final class Pipeline {
 
     private var captureW = 0, captureH = 0, captureFps = 0
 
-    func start(server: FrameServer, width: Int, height: Int, fps: Int, bitrateBps: Int) {
+    @discardableResult
+    func start(server: FrameServer, width: Int, height: Int, fps: Int, bitrateBps: Int,
+               codec: VideoCodec = .hevc, beforeStreaming: () -> Void) -> Bool {
+        if started && self.codec != codec { reset() }
         lock.lock(); defer { lock.unlock() }
-        guard !started else { return }
-        started = true
+        if started { beforeStreaming(); return encoderReady }
+        self.codec = codec
         wire(server: server)
 
         let sem = DispatchSemaphore(value: 0)
@@ -125,18 +129,25 @@ final class Pipeline {
         Task.detached { [weak self] in
             guard let self else { sem.signal(); return }
             do {
+                try self.encoder.start(width: width, height: height, fps: fps, bitrateBps: bitrateBps, codec: codec)
                 try await self.capturer.start(fps: fps, pixelWidth: width, pixelHeight: height)
-                try self.encoder.start(width: width, height: height, fps: fps, bitrateBps: bitrateBps)
-                self.encoderReady = true
+                self.started = true
                 print("[ds] capture+encode running at \(width)x\(height)@\(fps)")
                 HostLog.shared.write("pipeline running width=\(width) height=\(height) requestedFps=\(fps)")
             } catch {
                 print("[ds] pipeline error: \(error)")
                 HostLog.shared.write("pipeline start failed: \(error)")
+                self.capturer.stop()
+                self.encoder.stop()
+                self.codec = nil
             }
             sem.signal()
         }
         sem.wait()
+        guard started else { return false }
+        beforeStreaming()
+        encoderReady = true
+        return true
     }
 
     /// Full stop so a new start() can reconfigure (mode/fps/bitrate switch).
@@ -145,6 +156,7 @@ final class Pipeline {
         guard started else { return }
         started = false
         encoderReady = false
+        codec = nil
         timing.reset() // stale caps must not pair with a new configuration's packets
         let capt = capturer
         capturer.onAudio = nil
@@ -200,6 +212,7 @@ final class HostApp {
     private var virtualCreated = false
     private var injector: InputInjector?
     private(set) var pipeline: Pipeline?
+    private var negotiatedSession: (id: Int, codec: VideoCodec)?
     private var menuBar: MenuBar?
     private let terminationPreparation = TerminationPreparation()
     private let audioPresence = AudioDevicePresence()
@@ -381,7 +394,6 @@ final class HostApp {
         print("[ds] switch mode -> \(mode.rawValue)")
         settings.mode = mode
         applyMode()
-        sendAck()
     }
 
     func setLogical(w: Int, h: Int) {
@@ -406,16 +418,28 @@ final class HostApp {
 
     private func wireServer() {
         server.onControl = { [weak self] hello in
+            guard let self else { return }
+            let session = self.server.currentSession
             // Always enqueue: server callbacks share a serial queue. Async main
             // delivery preserves their order without blocking pipeline work.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                guard self.server.currentSession == session else { return }
                 // remote commands from the tablet (settings panel)
                 if let cmd = hello["cmd"] as? String {
                     self.handleCommand(cmd, hello)
                     return
                 }
                 guard (hello["magic"] as? String) == "DSXP" else { return }
+                do {
+                    let codec = try CodecNegotiation.select(hello: hello)
+                    self.negotiatedSession = (session, codec)
+                } catch {
+                    self.negotiatedSession = nil
+                    self.pipeline?.reset()
+                    self.server.sendControl(["ok": false, "error": "Invalid or unsupported video codecs"], forSession: session)
+                    return
+                }
                 let clientW = hello["width"] as? Int ?? self.settings.panelW
                 let clientH = hello["height"] as? Int ?? self.settings.panelH
                 let clientHz = hello["maxRefresh"] as? Int ?? 144
@@ -438,6 +462,7 @@ final class HostApp {
         }
         server.onClientConnected = { [weak self] in
             DispatchQueue.main.async {
+                self?.negotiatedSession = nil
                 // Also covers replacement of an existing single-client session.
                 self?.injector?.reset()
                 self?.injector?.refreshBounds()
@@ -445,6 +470,7 @@ final class HostApp {
         }
         server.onClientDisconnected = { [weak self] in
             DispatchQueue.main.async {
+                self?.negotiatedSession = nil
                 self?.injector?.reset()
                 print("[ds] client disconnected; display stays, pipeline idles")
             }
@@ -471,23 +497,32 @@ final class HostApp {
     }
 
     private func startPipelineAndAck() {
-        guard let pipeline else { return }
+        guard let session = negotiatedSession, server.currentSession == session.id else { return }
+        guard let pipeline else {
+            server.sendControl(["ok": false, "error": "Display pipeline unavailable"], forSession: session.id)
+            return
+        }
         pipeline.timing.reset() // "seq" is monotonic per connection
-        pipeline.start(server: server, width: streamW, height: streamH,
-                       fps: settings.fps,
-                       bitrateBps: settings.bitrateMbps * 1_000_000)
+        let ready = pipeline.start(server: server, width: streamW, height: streamH,
+                                   fps: settings.fps,
+                                   bitrateBps: settings.bitrateMbps * 1_000_000,
+                                   codec: session.codec, beforeStreaming: { self.sendAck() })
+        guard ready else {
+            server.sendControl(["ok": false, "error": "Video pipeline startup failed"], forSession: session.id)
+            return
+        }
         pipeline.kickAfterReconnect()
-        sendAck()
     }
 
     private func sendAck() {
+        guard let session = negotiatedSession, pipeline?.codec == session.codec else { return }
         server.sendControl([
             "ok": true,
             "width": streamW,
             "height": streamH,
             "fps": settings.fps,
             "bitrate": settings.bitrateMbps * 1_000_000,
-            "codec": "hevc",
+            "codec": session.codec.rawValue,
             "mirror": settings.mode == .mirror,
             "logicalW": settings.logicalW,
             "logicalH": settings.logicalH,
@@ -495,7 +530,7 @@ final class HostApp {
             "audioRate": 48000,
             "audioChannels": 2,
             "displayID": Int(displayID),
-        ])
+        ], forSession: session.id)
     }
 
     private func sendStats() {

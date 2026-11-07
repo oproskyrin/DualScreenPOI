@@ -44,7 +44,7 @@ class DsxpConnectionTest {
                 override fun onVideoFrame(annexB: ByteArray, isKeyframeHint: Boolean) {}
                 override fun onStats(stats: JSONObject) {}
                 override fun onDisconnected(value: String?) { reason = value.orEmpty(); disconnected.countDown() }
-            }, diagnostics = { events.add(it) }) { socket }
+            }, diagnostics = { events.add(it) }, socketFactory = { socket })
             try {
                 connection.connect(100, 100, 60)
                 assertTrue(reading.await(2, TimeUnit.SECONDS))
@@ -72,7 +72,7 @@ class DsxpConnectionTest {
             }
             override fun close() { closed.countDown(); super.close() }
         }
-        val connection = DsxpConnection("192.0.2.1", 7381, listener) { socket }
+        val connection = DsxpConnection("192.0.2.1", 7381, listener, socketFactory = { socket })
         try {
             connection.connect(2944, 1840, 120)
             assertTrue("connect started", entered.await(2, TimeUnit.SECONDS))

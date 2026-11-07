@@ -2,7 +2,7 @@ import Foundation
 import CoreVideo
 import VTEncoderShim
 
-/// Swift wrapper over the VTEncoderShim C API (hardware HEVC, realtime,
+/// Swift wrapper over the VTEncoderShim C API (HEVC/H264, realtime,
 /// Annex-B output with parameter sets inlined on keyframes).
 final class VideoEncoder {
     enum EncoderError: Error {
@@ -16,7 +16,7 @@ final class VideoEncoder {
     /// Annex-B access unit, PTS seconds since start, keyframe flag.
     var onPacket: ((Data, Double, Bool) -> Void)?
 
-    func start(width: Int, height: Int, fps: Int, bitrateBps: Int) throws {
+    func start(width: Int, height: Int, fps: Int, bitrateBps: Int, codec: VideoCodec = .hevc) throws {
         stop()
 
         let pointer = Unmanaged.passRetained(self).toOpaque()
@@ -27,8 +27,9 @@ final class VideoEncoder {
             enc.onPacket?(packet, pts, isKey != 0)
         }
 
-        guard let h = vtenc_create(UInt32(width), UInt32(height), UInt32(fps),
-                                   UInt32(bitrateBps), cb, pointer) else {
+        let selected = codec == .h264 ? VTENC_CODEC_H264 : VTENC_CODEC_HEVC
+        guard let h = vtenc_create_codec(UInt32(width), UInt32(height), UInt32(fps),
+                                         UInt32(bitrateBps), Int32(selected), cb, pointer) else {
             Unmanaged<VideoEncoder>.fromOpaque(pointer).release()
             throw EncoderError.sessionCreateFailed
         }

@@ -8,7 +8,7 @@ import android.os.HandlerThread
 import android.view.Surface
 
 /**
- * Low-latency HEVC decoder: consumes Annex-B access units, renders straight
+ * Low-latency AVC/HEVC decoder: consumes Annex-B access units, renders straight
  * to the SurfaceView surface. The Mac host inlines VPS/SPS/PPS in every
  * keyframe; the first keyframe is harvested into csd-0 for codec config
  * (Snapdragon decoders refuse to configure without it).
@@ -25,7 +25,9 @@ class VideoDecoder(
     /** Optional capture-to-render measurement pipeline (see [RenderTiming]). */
     private val renderTiming: RenderTiming? = null,
     /** Host-vs-client clock offset in ns, re-read at every render. */
-    private val clockOffsetNs: () -> Long = { 0L }
+    private val clockOffsetNs: () -> Long = { 0L },
+    val videoCodec: VideoCodec = VideoCodec.HEVC,
+    private val decoderSupport: DecoderSupport = DecoderSupport.system()
 ) {
 
     companion object {
@@ -52,55 +54,20 @@ class VideoDecoder(
     var lastError: String? = null
         private set
 
-    /** Splits an Annex-B access unit into NAL units (without start codes). */
-    private fun splitNals(au: ByteArray): List<Pair<Int, ByteArray>> {
-        val nals = ArrayList<Pair<Int, ByteArray>>()
-        var i = 0
-        val starts = ArrayList<Int>()
-        while (i < au.size - 3) {
-            if (au[i] == 0.toByte() && au[i + 1] == 0.toByte()) {
-                if (au[i + 2] == 1.toByte()) { starts.add(i + 3); i += 3; continue }
-                if (i < au.size - 4 && au[i + 2] == 0.toByte() && au[i + 3] == 1.toByte()) {
-                    starts.add(i + 4); i += 4; continue
-                }
-            }
-            i++
-        }
-        for (j in starts.indices) {
-            val from = starts[j]
-            val to = if (j + 1 < starts.size) starts[j + 1] - (if (au[starts[j + 1] - 1] == 0.toByte()) 4 else 3) else au.size
-            if (to <= from) continue
-            val nal = au.copyOfRange(from, to)
-            // HEVC NAL type: first byte's bits 1..6
-            val type = (nal[0].toInt() and 0x7E) shr 1
-            nals.add(type to nal)
-        }
-        return nals
-    }
-
     /** Starts the codec from a keyframe access unit. Returns true on success. */
     fun startFromKeyframe(keyAu: ByteArray): Boolean {
-        val paramSets = splitNals(keyAu).filter { (t, _) -> t == 32 || t == 33 || t == 34 }
-        if (paramSets.size < 3) return false
-
-        var csdLen = 0
-        for ((_, nal) in paramSets) csdLen += 4 + nal.size
-        val csd = ByteArray(csdLen)
-        var off = 0
-        for ((_, nal) in paramSets) {
-            csd[off++] = 0; csd[off++] = 0; csd[off++] = 0; csd[off++] = 1
-            System.arraycopy(nal, 0, csd, off, nal.size)
-            off += nal.size
-        }
+        val csd = AnnexB.configuration(keyAu, videoCodec) ?: return false
 
         return try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, width, height)
-            format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd))
+            val format = MediaFormat.createVideoFormat(videoCodec.mime, width, height)
+            csd.forEachIndexed { index, data -> format.setByteBuffer("csd-$index", java.nio.ByteBuffer.wrap(data)) }
             if (Build.VERSION.SDK_INT >= 30) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
             runCatching { format.setInteger("vendor.low-latency.enable", 1) }
-            val c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            val name = decoderSupport.decoderName(videoCodec, width, height)
+                ?: error("${videoCodec.label} decoder unavailable for $width × $height")
+            val c = MediaCodec.createByCodecName(name)
             codec = c // own the codec before configure/start, including failure paths
             val thread = HandlerThread("dsxp-codec").apply { start() }
             callbackThread = thread
@@ -117,11 +84,8 @@ class VideoDecoder(
         }
     }
 
-    /** True if this access unit carries parameter sets (keyframe). */
-    fun isKeyframe(au: ByteArray): Boolean {
-        val firstTypes = splitNals(au).map { it.first }
-        return firstTypes.contains(32) && firstTypes.contains(33)
-    }
+    /** Recognizes IDR/IRAP even when parameter sets are not repeated. */
+    fun isKeyframe(au: ByteArray): Boolean = AnnexB.isKeyframe(au, videoCodec)
 
     /**
      * Feed one Annex-B access unit (the keyframe that started the codec too).

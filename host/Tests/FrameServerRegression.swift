@@ -79,6 +79,13 @@ private func receivesControl(_ fd: Int32) -> Bool {
     return value["probe"] == true
 }
 
+private func receiveFrame(_ fd: Int32) -> (UInt8, Data)? {
+    guard let h = receiveExactly(fd, count: 5) else { return nil }
+    let size = Int(h[1]) << 24 | Int(h[2]) << 16 | Int(h[3]) << 8 | Int(h[4])
+    guard let bytes = receiveExactly(fd, count: size) else { return nil }
+    return (h[0], Data(bytes))
+}
+
 @main struct FrameServerRegression {
     static func main() throws {
         let port = availablePort()
@@ -94,6 +101,27 @@ private func receivesControl(_ fd: Int32) -> Bool {
         try server.start(port: port)
         let first = connectClient(port)
         check(eventually { connected.value == 1 && server.hasClient }, "first connection ready")
+        server.sendVideo(Data([0x11]))
+        server.sendAudio(Data([0x22]))
+        server.sendTiming(["seq": 1])
+        server.sendControl(["probe": true])
+        check(receivesControl(first), "media must be suppressed before successful codec ack")
+        server.sendControl(["ok": false, "error": "unsupported codec"])
+        _ = receiveExactly(first, count: 5).flatMap { h in
+            receiveExactly(first, count: Int(h[1]) << 24 | Int(h[2]) << 16 | Int(h[3]) << 8 | Int(h[4]))
+        }
+        server.sendVideo(Data([0x33]))
+        server.sendControl(["probe": true])
+        check(receivesControl(first), "rejected negotiation must not enable video")
+        let firstSession = server.currentSession
+        server.sendControl(["ok": true, "codec": "h264"], forSession: firstSession)
+        server.sendVideo(Data([0x44]))
+        let ack = receiveFrame(first)
+        check(ack?.0 == 0, "successful ack precedes video")
+        let ackJSON = ack.flatMap { try? JSONSerialization.jsonObject(with: $0.1) as? [String: Any] }
+        check(ackJSON?["codec"] as? String == "h264", "ack retains actual codec")
+        let video = receiveFrame(first)
+        check(video?.0 == 1 && video?.1 == Data([0x44]), "video enabled after successful ack")
         _ = shutdown(first, SHUT_RDWR)
         close(first)
         check(eventually { !server.hasClient && disconnected.value == 1 }, "EOF must release the active connection and notify disconnect exactly once")
@@ -104,8 +132,10 @@ private func receivesControl(_ fd: Int32) -> Bool {
         let third = connectClient(port)
         check(eventually { connected.value == 3 && server.hasClient }, "replacement must remain active after the old cancellation callback")
         check(disconnected.value == 2, "replacing a live connection must notify disconnect for releasing held input")
+        server.sendControl(["ok": true, "codec": "hevc"], forSession: firstSession)
+        server.sendVideo(Data([0x55]))
         server.sendControl(["probe": true])
-        check(receivesControl(third), "replacement receives server output")
+        check(receivesControl(third), "replacement cannot receive stale ack or previous session video")
         close(second)
         _ = shutdown(third, SHUT_RDWR)
         close(third)

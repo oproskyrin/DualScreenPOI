@@ -19,7 +19,9 @@ class DsxpConnection(
     private val listener: Listener,
     private val diagnostics: (String) -> Unit = {},
     private val latency: LatencyTracker? = null,
-    private val socketFactory: () -> Socket = { Socket() }
+    private val socketFactory: () -> Socket = { Socket() },
+    private val supportedCodecs: (Int, Int) -> Set<VideoCodec> = { _, _ -> setOf(VideoCodec.HEVC) },
+    private val preferredCodec: () -> VideoCodec = { VideoCodec.HEVC }
 ) {
     interface Listener {
         fun onAck(config: JSONObject)
@@ -27,6 +29,8 @@ class DsxpConnection(
         fun onAudio(pcm: ByteArray) {}
         fun onStats(stats: JSONObject)
         fun onDisconnected(reason: String?)
+        /** Terminal handshake error: do not retry an unsupported decoder forever. */
+        fun onRejected(reason: String) { onDisconnected(reason) }
     }
 
     @Volatile private var socket: Socket? = null
@@ -100,12 +104,16 @@ class DsxpConnection(
             }
 
             // hello
+            val offered = supportedCodecs(width, height)
+            var negotiated = false
             val hello = JSONObject()
                 .put("magic", "DSXP")
                 .put("version", 1)
                 .put("width", width)
                 .put("height", height)
                 .put("maxRefresh", maxRefresh)
+                .put("codecs", org.json.JSONArray(VideoCodec.entries.filter { it in offered }.map { it.wire }))
+                .put("preferredCodec", preferredCodec().wire)
                 .put("name", android.os.Build.MODEL)
             sendFrame(0x00, hello.toString().toByteArray())
             log("hello queued version=1 width=$width height=$height maxRefresh=$maxRefresh")
@@ -128,9 +136,13 @@ class DsxpConnection(
                             throw java.io.IOException("invalid control JSON")
                         }
                         log("ack ok=${ack.optBoolean("ok")} width=${ack.optInt("width")} height=${ack.optInt("height")} fps=${ack.optInt("fps")}")
+                        val selected = CodecNegotiation.accept(ack, offered, supportedCodecs)
+                        ack.put("codec", selected.wire)
+                        negotiated = true
+                        log("negotiated codec=${selected.wire}")
                         listener.onAck(ack)
                     }
-                    0x01 -> listener.onVideoFrame(payload, false)
+                    0x01 -> if (negotiated) listener.onVideoFrame(payload, false)
                     0x03 -> runCatching {
                         val json = JSONObject(String(payload))
                         latency?.onHostStats(json)
@@ -138,10 +150,16 @@ class DsxpConnection(
                     }
                     // Video timing JSON immediately preceding its 0x01 frame.
                     0x05 -> runCatching { latency?.onVideoTiming(JSONObject(String(payload))) }
-                    0x04 -> listener.onAudio(payload)
+                    0x04 -> if (negotiated) listener.onAudio(payload)
                 }
             }
             return true
+        } catch (e: CodecNegotiation.Rejected) {
+            disconnectReason = e.message ?: "Codec negotiation failed"
+            running.set(false)
+            sendExecutor.shutdownNow()
+            listener.onRejected(disconnectReason)
+            return false
         } catch (e: Exception) {
             // Preserve explicit send/surface/manual reasons instead of replacing
             // them with the SocketException caused by closing that socket.

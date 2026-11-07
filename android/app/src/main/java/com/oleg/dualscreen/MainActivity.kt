@@ -63,6 +63,9 @@ class MainActivity : AppCompatActivity() {
     private var state = State.IDLE
     private var connection: DsxpConnection? = null
     @Volatile private var decoder: VideoDecoder? = null
+    private val decoderSupport = DecoderSupport.system()
+    @Volatile private var preferredCodec = VideoCodec.HEVC
+    @Volatile private var negotiatedCodec: VideoCodec? = null
     private val audioPlayer = AudioPlayer()
     @Volatile private var streaming = false
     @Volatile private var config = JSONObject()
@@ -113,6 +116,7 @@ class MainActivity : AppCompatActivity() {
             val fps = d?.fps ?: 0.0
             val lat = latency
             if (diagnostics) statusText.text = buildString {
+                append("Кодек: ${negotiatedCodec?.label ?: "—"}\n")
                 append(String.format(Locale.getDefault(),
                     "Декодер: %.0f мс · %.0f fps\nЗадано на Mac: %d fps · %d Мбит/с · Панель: %.0f Гц",
                     decodeMs, fps, config.optInt("fps", requestedHz), lastHostStats?.optInt("bitrateMbps", 0) ?: 0,
@@ -161,6 +165,7 @@ class MainActivity : AppCompatActivity() {
         localCursor = prefs.getBoolean("local_cursor", true)
         physicalInputEnabled = prefs.getBoolean("physical_input", true)
         requestedHz = prefs.getInt("requested_hz", 120)
+        preferredCodec = VideoCodec.preference(prefs.getString("preferred_codec", null))
         handleX = prefs.getFloat("toolbar_x", 1f)
         handleY = prefs.getFloat("toolbar_y", 0f)
         if (prefs.getBoolean("user_stopped", false)) session.cancel()
@@ -240,7 +245,7 @@ class MainActivity : AppCompatActivity() {
         cards.addView(usb, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = ui.dp(10) })
         cards.addView(wifi, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = ui.dp(10) })
         page.addView(cards, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
-        ui.label(page, "HEVC  ·  Сенсорное управление  ·  До 120 fps по умолчанию", 13f, ui.muted)
+        ui.label(page, "HEVC / H.264  ·  Сенсорное управление  ·  До 120 fps по умолчанию", 13f, ui.muted)
         home = ui.scroll(page)
         home.setBackgroundColor(ui.background)
         root.addView(home, FrameLayout.LayoutParams(-1, -1))
@@ -423,6 +428,7 @@ class MainActivity : AppCompatActivity() {
             decoder?.stop(); decoder = null
             audioPlayer.stop()
             config = JSONObject(); lastHostStats = null
+            negotiatedCodec = null
         }
         prefs.edit().putBoolean("user_stopped", false).apply()
         val notification = SessionNotificationStatus(endpoint, wifi, SessionPhase.CONNECTING)
@@ -447,7 +453,9 @@ class MainActivity : AppCompatActivity() {
                     }
                     val w = config.optInt("width", 2944); val h = config.optInt("height", 1840)
                     if (w <= 0 || h <= 0 || w > 16384 || h > 16384) return
-                    if (w != pendingWidth || h != pendingHeight) { decoder?.stop(); decoder = null }
+                    val selected = VideoCodec.parse(config.optString("codec")) ?: return
+                    if (w != pendingWidth || h != pendingHeight || selected != negotiatedCodec) { decoder?.stop(); decoder = null }
+                    negotiatedCodec = selected
                     pendingWidth = w; pendingHeight = h
                     this@MainActivity.config = config
                     streaming = true
@@ -469,9 +477,11 @@ class MainActivity : AppCompatActivity() {
                 val epoch = callbackEpoch.get()
                 synchronized(mediaLock) {
                     if (!session.accepts(token) || !streaming || !surfaceView.holder.surface.isValid) return
+                    val selected = negotiatedCodec ?: return
                     val d = decoder ?: VideoDecoder(surfaceView.holder.surface, pendingWidth, pendingHeight,
                         renderTiming = tracker.renderTiming,
-                        clockOffsetNs = { if (tracker.clock.hasOffset) tracker.clock.offsetNs else 0L }
+                        clockOffsetNs = { if (tracker.clock.hasOffset) tracker.clock.offsetNs else 0L },
+                        videoCodec = selected, decoderSupport = decoderSupport
                     ).also { decoder = it }
                     // Consume the 0x05 stash for this frame even when the frame
                     // is dropped, so the timing never pairs with a later frame.
@@ -482,7 +492,7 @@ class MainActivity : AppCompatActivity() {
                         if (!d.isKeyframe(annexB)) return
                         if (!d.startFromKeyframe(annexB)) {
                             if (d.lastError != null) handler.post {
-                                if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, "Не удалось запустить HEVC-декодер. Попробуйте подключиться снова.") }
+                                if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, "Не удалось запустить ${selected.label}-декодер. Попробуйте другой кодек или разрешение.") }
                             }
                             return
                         }
@@ -492,11 +502,25 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onAudio(pcm: ByteArray) { synchronized(mediaLock) { if (session.accepts(token) && streaming && audioEnabled) audioPlayer.feed(pcm) } }
             override fun onStats(stats: JSONObject) { if (session.accepts(token)) lastHostStats = stats }
+            override fun onRejected(reason: String) {
+                val epoch = callbackEpoch.incrementAndGet()
+                synchronized(mediaLock) {
+                    if (!session.accepts(token)) return
+                    streaming = false; decoder?.stop(); decoder = null; audioPlayer.stop()
+                    negotiatedCodec = null
+                }
+                handler.post {
+                    if (session.accepts(token) && callbackEpoch.get() == epoch) {
+                        disconnectHome(); setState(State.ERROR, reason)
+                    }
+                }
+            }
             override fun onDisconnected(reason: String?) {
                 val epoch = callbackEpoch.incrementAndGet()
                 synchronized(mediaLock) {
                     if (!session.accepts(token)) return
                     streaming = false; decoder?.stop(); decoder = null; audioPlayer.stop()
+                    negotiatedCodec = null
                 }
                 handler.post {
                     if (!session.accepts(token) || callbackEpoch.get() != epoch) return@post
@@ -508,7 +532,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         connection = DsxpConnection(endpoint.host, endpoint.port, listener, diagnostics = clientLog::event,
-            latency = tracker).also { it.connect(size.x, size.y, requestedHz) }
+            latency = tracker, supportedCodecs = decoderSupport::supported,
+            preferredCodec = { preferredCodec }).also { it.connect(size.x, size.y, requestedHz) }
     }
 
     private fun updateSessionNotification() {
@@ -590,6 +615,7 @@ class MainActivity : AppCompatActivity() {
         stopSessionNotification()
         synchronized(mediaLock) {
             session.cancel(); streaming = false
+            negotiatedCodec = null
             connection?.close(); connection = null
             decoder?.stop(); decoder = null; audioPlayer.stop()
         }
@@ -693,6 +719,28 @@ class MainActivity : AppCompatActivity() {
         resetPhysicalInput()
         settingsDialog?.dismiss()
         val panel = ui.column(24)
+        ui.label(panel, "ВИДЕОКОДЕК", 12f, ui.accent, true)
+        ui.addButton(panel, "Предпочтение · ${preferredCodec.label}") {
+            val options = VideoCodec.entries
+            choose("Кодек · смена переподключает сеанс", options.map { it.label }.toTypedArray(), options.indexOf(preferredCodec)) { index ->
+                val selected = options[index]
+                if (selected != preferredCodec) {
+                    resetPhysicalInput()
+                    preferredCodec = selected
+                    prefs.edit().putString("preferred_codec", selected.wire).apply()
+                    if (connection != null) {
+                        synchronized(mediaLock) {
+                            streaming = false; decoder?.stop(); decoder = null; audioPlayer.stop(); negotiatedCodec = null
+                        }
+                        handler.removeCallbacks(statsUpdater)
+                        setState(State.RECONNECTING, "Согласуем кодек · ${selected.label}")
+                        connection?.requestReconnect()
+                    }
+                }
+                showSettings()
+            }
+        }
+        ui.label(panel, "Согласован: ${negotiatedCodec?.label ?: "—"}. HEVC — по умолчанию. Смена кодека сохраняется и переподключает активный сеанс. Mac может выбрать другой поддерживаемый кодек; старый Mac использует HEVC. Разница задержки требует A/B-проверки.", 13f, ui.muted)
         ui.addButton(panel, "Уведомление о соединении") { offerSessionNotifications(explicit = true) }
         ui.addButton(panel, "Журнал соединения") { showConnectionLog() }
         panel.addView(Switch(this).apply {

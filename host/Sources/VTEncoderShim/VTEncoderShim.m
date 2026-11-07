@@ -7,6 +7,7 @@ typedef struct {
     VTCompressionSessionRef session;
     vtenc_packet_cb cb;
     void *ctx;
+    int codec;
 } vtenc;
 
 static CFNumberRef numInt(int64_t v) {
@@ -56,36 +57,40 @@ static void packet_cb(void *outputCallbackRefCon,
     NSMutableData *out = [NSMutableData data];
     static const UInt8 startCode[4] = {0x00, 0x00, 0x00, 0x01};
 
-    if (isKey) {
-        // Iterate all parameter sets (VPS/SPS/PPS, possibly SEI) from the
-        // HEVC decoder configuration record. NOTE: the last parameter is
-        // NALUnitHeaderLengthOut (length-field size), NOT the NAL type.
-        for (size_t i = 0; i < 8; i++) {
-            const uint8_t *ptr = NULL;
-            size_t size = 0;
-            if (CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    fd, i, &ptr, &size, NULL, NULL) != noErr || ptr == NULL) break;
+    int headerLength = 0;
+    size_t parameterCount = 0;
+    for (size_t i = 0; ; i++) {
+        const uint8_t *ptr = NULL;
+        size_t size = 0;
+        OSStatus err = enc->codec == VTENC_CODEC_H264
+            ? CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fd, i, &ptr, &size, &parameterCount, &headerLength)
+            : CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fd, i, &ptr, &size, &parameterCount, &headerLength);
+        if (err != noErr || ptr == NULL) return;
+        if (isKey) {
             [out appendBytes:startCode length:4];
             [out appendBytes:ptr length:size];
         }
+        if (i + 1 >= parameterCount) break;
     }
+    if (headerLength < 1 || headerLength > 4) return;
 
-    // HVCC (4-byte length prefixed NALs) -> Annex B
+    // AVC/HVCC length-prefixed NALs -> Annex B, using the format's length size.
     size_t total = CMBlockBufferGetDataLength(bb);
     size_t offset = 0;
     uint8_t stack[512];
-    while (offset + 4 <= total) {
-        uint32_t beLen = 0;
-        if (CMBlockBufferCopyDataBytes(bb, offset, 4, &beLen) != noErr) break;
-        uint32_t nalLen = CFSwapInt32BigToHost(beLen);
-        if (nalLen == 0 || offset + 4 + nalLen > total) break;
+    while (offset + headerLength <= total) {
+        uint8_t lengthBytes[4];
+        if (CMBlockBufferCopyDataBytes(bb, offset, headerLength, lengthBytes) != noErr) return;
+        uint32_t nalLen = 0;
+        for (int i = 0; i < headerLength; i++) nalLen = (nalLen << 8) | lengthBytes[i];
+        if (nalLen == 0 || nalLen > total - offset - headerLength) return;
         size_t outLenBefore = out.length;
         [out appendBytes:startCode length:4];
         size_t copied = 0;
         BOOL ok = YES;
         while (copied < nalLen) {
             size_t chunk = (nalLen - copied < sizeof(stack)) ? (nalLen - copied) : sizeof(stack);
-            if (CMBlockBufferCopyDataBytes(bb, offset + 4 + copied, chunk, stack) != noErr) {
+            if (CMBlockBufferCopyDataBytes(bb, offset + headerLength + copied, chunk, stack) != noErr) {
                 ok = NO;
                 break;
             }
@@ -96,7 +101,7 @@ static void packet_cb(void *outputCallbackRefCon,
             [out setLength:outLenBefore];
             break;
         }
-        offset += 4 + nalLen;
+        offset += headerLength + nalLen;
     }
 
     if (out.length > 0) {
@@ -109,11 +114,21 @@ static void packet_cb(void *outputCallbackRefCon,
 void *vtenc_create(uint32_t width, uint32_t height,
                    uint32_t fps, uint32_t bitrateBps,
                    vtenc_packet_cb cb, void *ctx) {
+    return vtenc_create_codec(width, height, fps, bitrateBps, VTENC_CODEC_HEVC, cb, ctx);
+}
+
+void *vtenc_create_codec(uint32_t width, uint32_t height,
+                         uint32_t fps, uint32_t bitrateBps, int codec,
+                         vtenc_packet_cb cb, void *ctx) {
+    if ((codec != VTENC_CODEC_HEVC && codec != VTENC_CODEC_H264) ||
+        width == 0 || height == 0 || width > INT32_MAX || height > INT32_MAX || fps == 0 || bitrateBps == 0) return NULL;
     vtenc *enc = malloc(sizeof(vtenc));
     if (enc == NULL) return NULL;
     memset(enc, 0, sizeof(vtenc));
     enc->cb = cb;
     enc->ctx = ctx;
+    enc->codec = codec;
+    CMVideoCodecType codecType = codec == VTENC_CODEC_H264 ? kCMVideoCodecType_H264 : kCMVideoCodecType_HEVC;
 
     OSStatus err;
     if (getenv("DS_LOWLAT") != NULL) {
@@ -124,18 +139,18 @@ void *vtenc_create(uint32_t width, uint32_t height,
             &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
         err = VTCompressionSessionCreate(
             NULL, (int32_t)width, (int32_t)height,
-            kCMVideoCodecType_HEVC, spec, NULL, NULL,
+            codecType, spec, NULL, NULL,
             packet_cb, enc, &enc->session);
         CFRelease(spec);
     } else {
         err = VTCompressionSessionCreate(
             NULL, (int32_t)width, (int32_t)height,
-            kCMVideoCodecType_HEVC, NULL, NULL, NULL,
+            codecType, NULL, NULL, NULL,
             packet_cb, enc, &enc->session);
     }
     if (err != noErr || enc->session == NULL) {
         fprintf(stderr, "[vtenc] session create failed: %d\n", err);
-        free(enc);
+        vtenc_destroy(enc);
         return NULL;
     }
 
@@ -146,7 +161,9 @@ void *vtenc_create(uint32_t width, uint32_t height,
         VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue);
     }
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-    VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel);
+    err = VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_ProfileLevel,
+        codec == VTENC_CODEC_H264 ? kVTProfileLevel_H264_High_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel);
+    if (err != noErr) { vtenc_destroy(enc); return NULL; }
     setNum(enc->session, kVTCompressionPropertyKey_MaxFrameDelayCount, numInt(0));
     setNum(enc->session, kVTCompressionPropertyKey_MaxKeyFrameInterval, numInt((int64_t)fps * 2));
     setNum(enc->session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, numDouble(2.0));
@@ -157,7 +174,12 @@ void *vtenc_create(uint32_t width, uint32_t height,
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_DataRateLimits, limits);
     CFRelease(limits); CFRelease(limNums[0]); CFRelease(limNums[1]);
 
-    VTCompressionSessionPrepareToEncodeFrames(enc->session);
+    err = VTCompressionSessionPrepareToEncodeFrames(enc->session);
+    if (err != noErr) {
+        fprintf(stderr, "[vtenc] prepare failed: %d\n", err);
+        vtenc_destroy(enc);
+        return NULL;
+    }
     return enc;
 }
 

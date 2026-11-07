@@ -5,7 +5,7 @@ import Network
 ///
 /// Framing: [u8 type][u32 BE length][payload]
 ///   type 0x00 = control (JSON)
-///   type 0x01 = video (Annex-B HEVC access unit)
+///   type 0x01 = video (Annex-B HEVC/H264 access unit, as acknowledged)
 ///   type 0x02 = input event (JSON, tablet -> mac)
 ///   type 0x03 = stats (JSON, both ways)
 ///   type 0x04 = audio (PCM, mac -> tablet)
@@ -14,6 +14,8 @@ import Network
 ///
 /// Handshake: the client connects and sends type 0x00
 /// {"magic":"DSXP","version":1,"width":W,"height":H,"maxRefresh":R}.
+/// Optional codecs:["hevc","h264"] and preferredCodec select the codec;
+/// clients omitting codecs retain the legacy HEVC default.
 /// The server replies type 0x00 with the negotiated session config and then
 /// starts streaming video.
 final class FrameServer {
@@ -24,9 +26,11 @@ final class FrameServer {
     static let defaultPort: UInt16 = 7381
 
     private let queue = DispatchQueue(label: "ds.server")
+    private let queueKey = DispatchSpecificKey<Bool>()
     private var listener: NWListener?
     private(set) var connection: NWConnection?
     private var clientHello: [String: Any]?
+    private var mediaEnabled = false
     private let log: HostLog
     private var sessionNumber = 0
     private var sessionStarted = DispatchTime.now()
@@ -35,6 +39,7 @@ final class FrameServer {
 
     init(log: HostLog = .shared) {
         self.log = log
+        queue.setSpecific(key: queueKey, value: true)
     }
 
     /// JSON control messages from the tablet (the hello first).
@@ -116,6 +121,7 @@ final class FrameServer {
     private func accept(_ conn: NWConnection) {
         connection = conn
         clientHello = nil
+        mediaEnabled = false
         rxBuffer.removeAll(keepingCapacity: true)
         sessionNumber += 1
         sessionStarted = .now()
@@ -146,6 +152,7 @@ final class FrameServer {
         guard connection === conn else { return }
         connection = nil
         clientHello = nil
+        mediaEnabled = false
         rxBuffer.removeAll(keepingCapacity: true)
         conn.stateUpdateHandler = nil
         conn.cancel()
@@ -198,6 +205,7 @@ final class FrameServer {
         }
         switch type {
         case 0x00:
+            if json["magic"] as? String == "DSXP" { mediaEnabled = false }
             if clientHello == nil { log.write("session=\(sessionNumber) first control received") }
             clientHello = json
             onControl?(json)
@@ -212,8 +220,9 @@ final class FrameServer {
 
     // MARK: - Sending
 
-    func sendControl(_ json: [String: Any]) {
-        send(type: 0x00, payload: (try? JSONSerialization.data(withJSONObject: json)) ?? Data())
+    func sendControl(_ json: [String: Any], forSession session: Int? = nil) {
+        send(type: 0x00, payload: (try? JSONSerialization.data(withJSONObject: json)) ?? Data(),
+             enableMedia: json["ok"] as? Bool, forSession: session)
     }
 
     func sendVideo(_ annexB: Data) {
@@ -236,9 +245,15 @@ final class FrameServer {
         send(type: 0x05, payload: (try? JSONSerialization.data(withJSONObject: json)) ?? Data())
     }
 
-    private func send(type: UInt8, payload: Data) {
+    private func send(type: UInt8, payload: Data, enableMedia: Bool? = nil, forSession session: Int? = nil) {
         queue.async { [weak self] in
             guard let self, let conn = self.connection, conn.state == .ready else { return }
+            if let session, session != self.sessionNumber { return }
+            if type == 0x01 || type == 0x04 || type == 0x05 {
+                guard self.mediaEnabled else { return }
+            }
+            // All writes share this queue: enqueue the ack before media.
+            if let enableMedia { self.mediaEnabled = enableMedia }
             var frame = Data(capacity: payload.count + 5)
             frame.append(type)
             frame.append(UInt8((payload.count >> 24) & 0xFF))
@@ -263,5 +278,11 @@ final class FrameServer {
 
     var hasClient: Bool {
         queue.sync { connection?.state == .ready }
+    }
+
+    /// Safe in a server callback and on main; bind delayed acks to their hello.
+    var currentSession: Int {
+        if DispatchQueue.getSpecific(key: queueKey) == true { return sessionNumber }
+        return queue.sync { sessionNumber }
     }
 }

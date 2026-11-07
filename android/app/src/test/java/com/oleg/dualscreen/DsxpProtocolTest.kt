@@ -75,6 +75,8 @@ class DsxpProtocolTest {
                 assertEquals(0, hello.first)
                 val json = JSONObject(String(hello.second))
                 assertEquals("DSXP", json.getString("magic")); assertEquals(2944, json.getInt("width")); assertEquals(120, json.getInt("maxRefresh"))
+                assertEquals("hevc", json.getString("preferredCodec"))
+                assertEquals(listOf("hevc"), (0 until json.getJSONArray("codecs").length()).map { json.getJSONArray("codecs").getString(it) })
                 send(0, "{\"ok\":true}".toByteArray())
                 send(1, byteArrayOf(1, 2)); send(4, byteArrayOf(3, 4)); send(3, "{\"hostFps\":120}".toByteArray())
                 assertTrue(ack.await(2, TimeUnit.SECONDS)); assertTrue(video.await(2, TimeUnit.SECONDS))

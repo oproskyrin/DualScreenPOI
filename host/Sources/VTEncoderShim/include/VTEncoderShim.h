@@ -9,13 +9,18 @@
 extern "C" {
 #endif
 
-// Hardware HEVC encoder (VideoToolbox), realtime/low-latency. Emits
-// Annex-B access units: VPS/SPS/PPS inlined on keyframes.
+// VideoToolbox encoder, realtime/low-latency. Emits Annex-B access units
+// with VPS/SPS/PPS (HEVC) or SPS/PPS (H264) inlined on keyframes.
 // pts is in seconds (double).
 
 typedef void (*vtenc_packet_cb)(void *ctx,
                                 const uint8_t *data, size_t len,
                                 double ptsSeconds, int isKey);
+
+enum { VTENC_CODEC_HEVC = 0, VTENC_CODEC_H264 = 1 };
+void *vtenc_create_codec(uint32_t width, uint32_t height,
+                         uint32_t fps, uint32_t bitrateBps, int codec,
+                         vtenc_packet_cb cb, void *ctx);
 
 // Returns opaque handle or NULL on failure.
 void *vtenc_create(uint32_t width, uint32_t height,
