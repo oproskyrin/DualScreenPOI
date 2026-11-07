@@ -568,32 +568,27 @@ final class HostApp {
     private func adapt(clientStats: [String: Any]) {
         let now = Date()
         guard now.timeIntervalSince(lastAdjust) >= 3 else { return }
-        guard let latency = clientStats["latencyMs"] as? Double else { return }
-
-        var next = currentBitrateBps
-        if latency > 60 {
-            next = Int(Double(currentBitrateBps) * 0.75)
-            goodWindows = 0
-        } else if latency > 40 {
-            next = Int(Double(currentBitrateBps) * 0.9)
-            goodWindows = 0
-        } else if latency < 30 {
-            goodWindows += 1
-            if goodWindows >= 3 {
-                next = min(Int(Double(currentBitrateBps) * 1.1), maxBitrateBps)
-                goodWindows = 0
-            }
-        } else {
-            goodWindows = 0
-        }
-
-        next = max(next, 8_000_000)
-        if next != currentBitrateBps {
-            currentBitrateBps = next
+        // Prefer the client's current end-to-end capture->render latency: the
+        // decoder-only figure stays small while the real backlog grows, and the
+        // long average keeps punishing a recovered link. Falls back to the
+        // average and then to decoder latency.
+        let endToEnd = clientStats["videoCapToRenderMs"] as? Double
+            ?? clientStats["videoCapToRenderMsAvg"] as? Double
+        let decoder = clientStats["decodeMs"] as? Double ?? clientStats["latencyMs"] as? Double
+        guard endToEnd != nil || decoder != nil else { return }
+        let decision = BitratePolicy.next(currentBps: currentBitrateBps,
+                                          maxBps: maxBitrateBps,
+                                          latencyMs: endToEnd,
+                                          decoderMs: decoder,
+                                          goodWindows: goodWindows)
+        goodWindows = decision.goodWindows
+        if decision.changed {
+            currentBitrateBps = decision.bitrateBps
             lastAdjust = now
-            settings.bitrateMbps = next / 1_000_000
-            pipeline?.setBitrate(next)
-            print(String(format: "[abr] latency %.0f ms -> %d Mbps", latency, next / 1_000_000))
+            settings.bitrateMbps = decision.bitrateBps / 1_000_000
+            pipeline?.setBitrate(decision.bitrateBps)
+            print(String(format: "[abr] latency %.0f ms -> %d Mbps",
+                         endToEnd ?? decoder ?? 0, decision.bitrateBps / 1_000_000))
         }
     }
 
@@ -948,7 +943,7 @@ var settings = HostApp.Settings(
     panelW: Int(argValue("--width", "2944"))!,
     panelH: Int(argValue("--height", "1840"))!,
     fps: Int(argValue("--fps", "120"))!,
-    bitrateMbps: Int(argValue("--bitrate", "80"))!,
+    bitrateMbps: Int(argValue("--bitrate", "60"))!,
     port: UInt16(argValue("--port", "7381"))!,
     hidpi: !args.contains("--no-hidpi")
 )

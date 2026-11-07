@@ -44,6 +44,9 @@ jobs:
       - name: Test latency timing FIFO and clock sync echo
         run: bash scripts/test-host-timing.sh
 
+      - name: Test adaptive bitrate policy
+        run: bash scripts/test-host-bitrate.sh
+
       - name: Test codec negotiation and AVC/HEVC hardware round trips
         run: bash scripts/test-host-codec.sh
 
