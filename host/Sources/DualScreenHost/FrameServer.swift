@@ -8,6 +8,9 @@ import Network
 ///   type 0x01 = video (Annex-B HEVC access unit)
 ///   type 0x02 = input event (JSON, tablet -> mac)
 ///   type 0x03 = stats (JSON, both ways)
+///   type 0x04 = audio (PCM, mac -> tablet)
+///   type 0x05 = video timing sidecar (JSON, mac -> tablet, sent
+///     immediately before its paired 0x01 frame)
 ///
 /// Handshake: the client connects and sends type 0x00
 /// {"magic":"DSXP","version":1,"width":W,"height":H,"maxRefresh":R}.
@@ -224,6 +227,13 @@ final class FrameServer {
 
     func sendStats(_ json: [String: Any]) {
         send(type: 0x03, payload: (try? JSONSerialization.data(withJSONObject: json)) ?? Data())
+    }
+
+    /// Latency sidecar for one encoded frame. Must be sent immediately
+    /// before the paired 0x01 video frame — both go through the same serial
+    /// send queue, so issuing sendTiming then sendVideo preserves order.
+    func sendTiming(_ json: [String: Any]) {
+        send(type: 0x05, payload: (try? JSONSerialization.data(withJSONObject: json)) ?? Data())
     }
 
     private func send(type: UInt8, payload: Data) {

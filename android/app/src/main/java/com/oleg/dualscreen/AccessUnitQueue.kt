@@ -9,7 +9,7 @@ package com.oleg.dualscreen
  */
 class AccessUnitQueue(private val capacity: Int) {
 
-    class Frame(val data: ByteArray, val keyframe: Boolean)
+    class Frame(val data: ByteArray, val keyframe: Boolean, val tag: Any? = null)
 
     private val frames = ArrayDeque<Frame>()
 
@@ -22,13 +22,13 @@ class AccessUnitQueue(private val capacity: Int) {
     }
 
     @Synchronized
-    fun offer(data: ByteArray, keyframe: Boolean) {
+    fun offer(data: ByteArray, keyframe: Boolean, tag: Any? = null) {
         if (frames.size >= capacity) {
             val victim = frames.indexOfFirst { !it.keyframe }
             if (victim >= 0) frames.removeAt(victim) else frames.removeFirst()
             dropped++
         }
-        frames.addLast(Frame(data, keyframe))
+        frames.addLast(Frame(data, keyframe, tag))
     }
 
     @Synchronized

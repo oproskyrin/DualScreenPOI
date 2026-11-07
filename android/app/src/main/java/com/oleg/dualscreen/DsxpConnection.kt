@@ -18,6 +18,7 @@ class DsxpConnection(
     private val port: Int,
     private val listener: Listener,
     private val diagnostics: (String) -> Unit = {},
+    private val latency: LatencyTracker? = null,
     private val socketFactory: () -> Socket = { Socket() }
 ) {
     interface Listener {
@@ -130,7 +131,13 @@ class DsxpConnection(
                         listener.onAck(ack)
                     }
                     0x01 -> listener.onVideoFrame(payload, false)
-                    0x03 -> runCatching { listener.onStats(JSONObject(String(payload))) }
+                    0x03 -> runCatching {
+                        val json = JSONObject(String(payload))
+                        latency?.onHostStats(json)
+                        listener.onStats(json)
+                    }
+                    // Video timing JSON immediately preceding its 0x01 frame.
+                    0x05 -> runCatching { latency?.onVideoTiming(JSONObject(String(payload))) }
                     0x04 -> listener.onAudio(payload)
                 }
             }
@@ -147,12 +154,20 @@ class DsxpConnection(
         }
     }
 
-    fun sendInput(json: JSONObject) = sendFrame(0x02, json.toString().toByteArray())
+    fun sendInput(json: JSONObject) {
+        // "ts" (android uptime ns) enables the host's input-transit probe.
+        latency?.stampOutgoingInput(json)
+        sendFrame(0x02, json.toString().toByteArray())
+    }
 
     /** Remote control commands (setMode/setLogical/setFps), type 0x00. */
     fun sendCommand(json: JSONObject) = sendFrame(0x00, json.toString().toByteArray())
 
-    fun sendStats(json: JSONObject) = sendFrame(0x03, json.toString().toByteArray())
+    fun sendStats(json: JSONObject) {
+        // "t1" (android uptime ns) drives the NTP-lite clock sync exchange.
+        latency?.stampOutgoingStats(json)
+        sendFrame(0x03, json.toString().toByteArray())
+    }
 
     /** Refresh the session after Android recreates a decoder surface. */
     fun requestReconnect() {

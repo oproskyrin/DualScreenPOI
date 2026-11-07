@@ -41,6 +41,9 @@ jobs:
       - name: Test physical keyboard and pointer input
         run: bash scripts/test-host-input.sh
 
+      - name: Test latency timing FIFO and clock sync echo
+        run: bash scripts/test-host-timing.sh
+
       - name: Build DualScreenHost
         run: swift build -c release --package-path host
 

@@ -23,6 +23,9 @@ func argValue(_ name: String, _ fallback: String) -> String {
 final class Pipeline {
     let capturer: DisplayCapturer
     let encoder = VideoEncoder()
+    /// Pairs each submitted frame's SCK arrival time (cap) with the uptime ns
+    /// its encoded packet is emitted (enc) for the 0x05 timing sidecar.
+    let timing = TimingFIFO()
     private var started = false
     private var encoderReady = false
     private let lock = NSLock()
@@ -59,6 +62,7 @@ final class Pipeline {
             if self.encoderReady {
                 let force = self.forceKeyFrames > 0
                 if force { self.forceKeyFrames -= 1 }
+                self.timing.push(capNs: Double(DispatchTime.now().uptimeNanoseconds))
                 self.encoder.encode(frame: buffer, forceKeyframe: force)
             }
         }
@@ -75,6 +79,9 @@ final class Pipeline {
             if isKey && self.dbgKeysDumped < 1 {
                 self.dbgKeysDumped += 1
                 self.dumpNalTypes(data)
+            }
+            if let t = self.timing.pop(encNs: Double(DispatchTime.now().uptimeNanoseconds)) {
+                server.sendTiming(["seq": t.seq, "cap": t.cap, "enc": t.enc])
             }
             server.sendVideo(data)
             self.noteFrameSent()
@@ -138,6 +145,7 @@ final class Pipeline {
         guard started else { return }
         started = false
         encoderReady = false
+        timing.reset() // stale caps must not pair with a new configuration's packets
         let capt = capturer
         capturer.onAudio = nil
         encoder.onPacket = nil
@@ -195,6 +203,10 @@ final class HostApp {
     private var menuBar: MenuBar?
     private let terminationPreparation = TerminationPreparation()
     private let audioPresence = AudioDevicePresence()
+    /// NTP-lite echo of the client's last t1 (see TimingCoordinator.swift).
+    private let clockSync = ClockSyncEcho()
+    /// Raw echo of the last input ts probe; host does no offset math.
+    private let inputProbe = InputProbeEcho()
     private var timers: [Timer] = []
     var updater: AppUpdater?
     private let arrangement = DisplayArrangement()
@@ -413,9 +425,15 @@ final class HostApp {
             }
         }
         server.onInput = { [weak self] json in
+            // Arrival stamped on the server queue (frame-parse time), before
+            // the async main-thread dispatch adds latency to "arr".
+            self?.inputProbe.note(ts: json["ts"] as? Double,
+                                  arrivalNs: Double(DispatchTime.now().uptimeNanoseconds))
             DispatchQueue.main.async { self?.injector?.handle(json) }
         }
         server.onClientStats = { [weak self] stats in
+            self?.clockSync.noteArrival(t1: stats["t1"] as? Double,
+                                        hostArrivalNs: Double(DispatchTime.now().uptimeNanoseconds))
             DispatchQueue.main.async { self?.adaptBitrate(clientStats: stats) }
         }
         server.onClientConnected = { [weak self] in
@@ -454,6 +472,7 @@ final class HostApp {
 
     private func startPipelineAndAck() {
         guard let pipeline else { return }
+        pipeline.timing.reset() // "seq" is monotonic per connection
         pipeline.start(server: server, width: streamW, height: streamH,
                        fps: settings.fps,
                        bitrateBps: settings.bitrateMbps * 1_000_000)
@@ -481,12 +500,23 @@ final class HostApp {
 
     private func sendStats() {
         guard server.hasClient else { return }
-        server.sendStats([
+        let hostNowNs = Double(DispatchTime.now().uptimeNanoseconds)
+        var stats: [String: Any] = [
             "hostFps": pipeline?.currentFps ?? 0,
             "mode": settings.mode.rawValue,
             "logical": "\(settings.logicalW)x\(settings.logicalH)",
             "bitrateMbps": settings.bitrateMbps,
-        ])
+            // Client uses this to sanity-check monotonic cap in 0x05 sidecars
+            // (FIFO desync mitigation when the encoder drops a frame).
+            "hostNow": hostNowNs,
+        ]
+        if let sync = clockSync.takePayload(nowNs: hostNowNs) {
+            stats["sync"] = sync
+        }
+        if let probe = inputProbe.takePayload() {
+            stats["inProbe"] = probe
+        }
+        server.sendStats(stats)
     }
 
     // MARK: adaptive bitrate

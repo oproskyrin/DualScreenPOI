@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var streaming = false
     @Volatile private var config = JSONObject()
     @Volatile private var lastHostStats: JSONObject? = null
+    @Volatile private var latency: LatencyTracker? = null
     private var pendingWidth = 0
     private var pendingHeight = 0
     private var requestedHz = 120
@@ -100,21 +101,51 @@ class MainActivity : AppCompatActivity() {
             if (discovered.isEmpty()) "Mac не найден. Проверьте общую Wi-Fi сеть и запущенный DualScreen на Mac." else "Выберите Mac для подключения")
         renderDiscovered()
     }
+    /** "12 мс" or "—" when no sane measurement exists yet. */
+    private fun fmtMs(ms: Double): String =
+        if (ms.isFinite() && ms >= 0.0) String.format(Locale.getDefault(), "%.0f мс", ms) else "—"
+
     private val statsUpdater = object : Runnable {
         override fun run() {
             if (!streaming) return
             val d = decoder
-            val latency = d?.latencyMs ?: 0.0
+            val decodeMs = d?.latencyMs ?: 0.0
             val fps = d?.fps ?: 0.0
-            if (diagnostics) statusText.text = String.format(Locale.getDefault(),
-                "Декодер: %.0f мс · %.0f fps\nЗадано на Mac: %d fps · %d Мбит/с · Панель: %.0f Гц",
-                latency, fps, config.optInt("fps", requestedHz), lastHostStats?.optInt("bitrateMbps", 0) ?: 0,
-                panelDisplay.refreshRate)
+            val lat = latency
+            if (diagnostics) statusText.text = buildString {
+                append(String.format(Locale.getDefault(),
+                    "Декодер: %.0f мс · %.0f fps\nЗадано на Mac: %d fps · %d Мбит/с · Панель: %.0f Гц",
+                    decodeMs, fps, config.optInt("fps", requestedHz), lastHostStats?.optInt("bitrateMbps", 0) ?: 0,
+                    panelDisplay.refreshRate))
+                // Capture-to-render needs a synced clock; without it the numbers
+                // would be garbage, so wait for the NTP-lite exchange.
+                if (lat != null && lat.clock.hasOffset) {
+                    append("\nЗахват Mac→экран планшета: ").append(fmtMs(lat.renderTiming.lastCapToRenderMs()))
+                        .append(" (ср ").append(fmtMs(lat.renderTiming.avgCapToRenderMs())).append(")")
+                    append("\nКодирование Mac→экран: ").append(fmtMs(lat.renderTiming.lastEncToRenderMs()))
+                        .append(" (ср ").append(fmtMs(lat.renderTiming.avgEncToRenderMs())).append(")")
+                    append(String.format(Locale.getDefault(), "\nЧасы: сдвиг %+.0f мс · RTT %s",
+                        lat.clock.offsetNs / 1e6, fmtMs(lat.clock.rttMs)))
+                    append("\nВвод планшет→Mac: ").append(fmtMs(lat.input.lastMs()))
+                        .append(" · макс ").append(fmtMs(lat.input.maxMs()))
+                }
+            }
             // ABR feedback is independent of whether diagnostics are visible.
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - lastStatsSent >= 2000) {
                 lastStatsSent = now
-                connection?.sendStats(JSONObject().put("latencyMs", latency).put("fps", fps))
+                val stats = JSONObject().put("latencyMs", decodeMs).put("decodeMs", decodeMs).put("fps", fps)
+                if (lat != null) {
+                    putFinite(stats, "videoCapToRenderMs", lat.renderTiming.lastCapToRenderMs())
+                    putFinite(stats, "videoCapToRenderMsAvg", lat.renderTiming.avgCapToRenderMs())
+                    putFinite(stats, "videoEncToRenderMs", lat.renderTiming.lastEncToRenderMs())
+                    putFinite(stats, "videoEncToRenderMsAvg", lat.renderTiming.avgEncToRenderMs())
+                    putFinite(stats, "clockOffsetMs", lat.clock.offsetNs / 1e6)
+                    putFinite(stats, "clockRttMs", lat.clock.rttMs)
+                    putFinite(stats, "inputTransitMs", lat.input.lastMs())
+                    putFinite(stats, "inputTransitMaxMs", lat.input.maxMs())
+                }
+                connection?.sendStats(stats)
             }
             updateSessionNotification()
             handler.postDelayed(this, 1000)
@@ -403,6 +434,8 @@ class MainActivity : AppCompatActivity() {
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealSize(size)
         val callbackEpoch = java.util.concurrent.atomic.AtomicLong()
+        val tracker = LatencyTracker()
+        latency = tracker
         val listener = object : DsxpConnection.Listener {
             override fun onAck(config: JSONObject) {
                 val epoch = callbackEpoch.get()
@@ -436,8 +469,16 @@ class MainActivity : AppCompatActivity() {
                 val epoch = callbackEpoch.get()
                 synchronized(mediaLock) {
                     if (!session.accepts(token) || !streaming || !surfaceView.holder.surface.isValid) return
-                    val d = decoder ?: VideoDecoder(surfaceView.holder.surface, pendingWidth, pendingHeight).also { decoder = it }
+                    val d = decoder ?: VideoDecoder(surfaceView.holder.surface, pendingWidth, pendingHeight,
+                        renderTiming = tracker.renderTiming,
+                        clockOffsetNs = { if (tracker.clock.hasOffset) tracker.clock.offsetNs else 0L }
+                    ).also { decoder = it }
+                    // Consume the 0x05 stash for this frame even when the frame
+                    // is dropped, so the timing never pairs with a later frame.
+                    val timing = tracker.takeVideoTiming()
                     if (!d.started) {
+                        // Fresh decoder (or restart): resync the render FIFO.
+                        tracker.resetRenderTiming()
                         if (!d.isKeyframe(annexB)) return
                         if (!d.startFromKeyframe(annexB)) {
                             if (d.lastError != null) handler.post {
@@ -446,7 +487,7 @@ class MainActivity : AppCompatActivity() {
                             return
                         }
                     }
-                    d.feed(annexB)
+                    d.feed(annexB, timing)
                 }
             }
             override fun onAudio(pcm: ByteArray) { synchronized(mediaLock) { if (session.accepts(token) && streaming && audioEnabled) audioPlayer.feed(pcm) } }
@@ -466,7 +507,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        connection = DsxpConnection(endpoint.host, endpoint.port, listener, diagnostics = clientLog::event).also { it.connect(size.x, size.y, requestedHz) }
+        connection = DsxpConnection(endpoint.host, endpoint.port, listener, diagnostics = clientLog::event,
+            latency = tracker).also { it.connect(size.x, size.y, requestedHz) }
     }
 
     private fun updateSessionNotification() {
@@ -770,7 +812,10 @@ class MainActivity : AppCompatActivity() {
         // keys have no standalone printable code point and fall back to raw codes.
         val text = if (unicode > 0 && Character.isValidCodePoint(unicode)) String(Character.toChars(unicode)) else null
         physicalInput.key(event.deviceId, event.keyCode, down, event.repeatCount,
-            KeyEvent.normalizeMetaState(event.metaState), event.downTime, text)?.let { connection?.sendInput(it) }
+            KeyEvent.normalizeMetaState(event.metaState), event.downTime, text)?.let {
+            it.put("ts", event.eventTime * 1_000_000L) // uptime ns for transit probes
+            connection?.sendInput(it)
+        }
         return true
     }
 
@@ -801,7 +846,10 @@ class MainActivity : AppCompatActivity() {
             event.getAxisValue(MotionEvent.AXIS_VSCROLL).toDouble())
         physicalInput.pointer(kind, mask, action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_BUTTON_PRESS,
             event.x.toDouble() / surfaceView.width, event.y.toDouble() / surfaceView.height,
-            KeyEvent.normalizeMetaState(event.metaState), dx, dy).forEach { connection?.sendInput(it) }
+            KeyEvent.normalizeMetaState(event.metaState), dx, dy).forEach {
+            it.put("ts", event.eventTime * 1_000_000L) // uptime ns for transit probes
+            connection?.sendInput(it)
+        }
         return true
     }
 
@@ -914,6 +962,8 @@ class MainActivity : AppCompatActivity() {
         fun send(vararg pairs: Pair<String, Any>) {
             val json = JSONObject()
             for ((k, v) in pairs) json.put(k, v)
+            // Uptime ns of the MotionEvent itself (not send time) for transit probes.
+            json.put("ts", event.eventTime * 1_000_000L)
             conn.sendInput(json)
         }
 

@@ -18,7 +18,15 @@ import android.view.Surface
  * access unit goes into a small [AccessUnitQueue] that drops the oldest
  * non-keyframe on overflow, so the network reader thread never stalls.
  */
-class VideoDecoder(private val surface: Surface, private val width: Int, private val height: Int) {
+class VideoDecoder(
+    private val surface: Surface,
+    private val width: Int,
+    private val height: Int,
+    /** Optional capture-to-render measurement pipeline (see [RenderTiming]). */
+    private val renderTiming: RenderTiming? = null,
+    /** Host-vs-client clock offset in ns, re-read at every render. */
+    private val clockOffsetNs: () -> Long = { 0L }
+) {
 
     companion object {
         /** Matches the host's reduced socket queue depth; small on purpose. */
@@ -119,23 +127,25 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
      * Feed one Annex-B access unit (the keyframe that started the codec too).
      * Non-blocking: uses a free input buffer if one is available, otherwise
      * queues the AU with drop-oldest-delta policy on overflow.
+     * [timing] is the 0x05 metadata that preceded this frame; it travels with
+     * the AU so a dropped AU drops its timing entry with it.
      */
-    fun feed(accessUnit: ByteArray) {
+    fun feed(accessUnit: ByteArray, timing: FrameTiming? = null) {
         if (!running) return
         val c = codec ?: return
         synchronized(lock) {
             if (!running) return
             val index = freeInputs.removeFirstOrNull()
             if (index != null) {
-                queueInput(c, index, accessUnit)
+                queueInput(c, index, accessUnit, timing)
             } else {
-                pending.offer(accessUnit, isKeyframe(accessUnit))
+                pending.offer(accessUnit, isKeyframe(accessUnit), timing)
             }
         }
     }
 
     /** Queues one AU into an input buffer. Callers hold [lock] and check running. */
-    private fun queueInput(c: MediaCodec, index: Int, au: ByteArray) {
+    private fun queueInput(c: MediaCodec, index: Int, au: ByteArray, timing: FrameTiming?) {
         try {
             val buf = c.getInputBuffer(index)
             if (buf == null) {
@@ -147,6 +157,9 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
             // Monotonic local PTS measures decoder feed -> output only.
             inputPts = System.nanoTime() / 1000
             c.queueInputBuffer(index, 0, au.size, inputPts, 0)
+            if (timing != null) {
+                renderTiming?.push(timing.capNs, timing.encNs, android.os.SystemClock.uptimeMillis() * 1_000_000L)
+            }
         } catch (_: Exception) {
             running = false
         }
@@ -162,7 +175,7 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
                     freeInputs.addLast(index)
                     break
                 }
-                queueInput(c, index, frame.data)
+                queueInput(c, index, frame.data, frame.tag as FrameTiming?)
             }
         }
     }
@@ -181,6 +194,8 @@ class VideoDecoder(private val surface: Surface, private val width: Int, private
                     latencyMs = latencyMs * 0.8 + lat * 0.2
                 }
                 c.releaseOutputBuffer(index, true)
+                renderTiming?.onRendered(
+                    android.os.SystemClock.uptimeMillis() * 1_000_000L, clockOffsetNs())
                 frameCount++
                 val now = System.currentTimeMillis()
                 val dt = now - windowStart

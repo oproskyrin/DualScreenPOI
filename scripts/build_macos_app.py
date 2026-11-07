@@ -126,7 +126,7 @@ def write_distribution(path, app_version, audio_version):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default=os.environ.get("VERSION", "1.0.1"))
+    parser.add_argument("--version", default=os.environ.get("VERSION", "1.1.0"))
     parser.add_argument("--public-key", type=Path, default=Path(os.environ.get("SPARKLE_PUBLIC_KEY_FILE", ROOT / "packaging/macos/sparkle-public-key.txt")))
     parser.add_argument("--output", type=Path, default=ROOT / "dist/macos")
     parser.add_argument("--arch", choices=("arm64", "x86_64"), default="arm64")
