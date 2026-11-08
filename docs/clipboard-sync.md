@@ -59,3 +59,16 @@ hashes. Toast on the tablet shows at most the first 24 characters.
 - Host: `scripts/test-host-clipboard.sh` (pure loop-suppression core + frame
   round-trip), wired into CI next to the bitrate tests.
 - Android: unit tests for hash/dedup core; listener glue is verified live.
+
+## Live status (2026-11-08, v1.5.0)
+
+Verified live over USB: pbcopy on the Mac reaches the tablet (system shows the
+clipboard preview bubble); a fake client's 0x06 lands in the Mac pasteboard;
+incoming clips produce no echo in either direction.
+
+Tablet → Mac: the listener is gated on a live session, and Android 10+ only
+lets the focused app read the clipboard. While the stream is fullscreen the
+user cannot copy from other apps without losing focus, so this direction is
+effectively available once the panel grows a text surface (e.g. scratch notes)
+or the client ships as a freeform window. The outgoing path itself is unit
+tested end to end (listener → core → executor send).
