@@ -53,6 +53,9 @@ jobs:
       - name: Test codec negotiation and AVC/HEVC hardware round trips
         run: bash scripts/test-host-codec.sh
 
+      - name: Test mic input ring route (0x07 overfill/negotiation drops)
+        run: bash scripts/test-host-mic.sh
+
       - name: Clear stale SPM artifact cache
         run: rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts || true
 
@@ -96,6 +99,7 @@ jobs:
         run: |
           git clone --quiet --no-checkout https://github.com/ExistentialAudio/BlackHole.git "$RUNNER_TEMP/BlackHole"
           BLACKHOLE_SOURCE="$RUNNER_TEMP/BlackHole" BUILD_SCRATCH_ROOT="$RUNNER_TEMP" bash scripts/build-dualscreen-audio.sh
+          BLACKHOLE_SOURCE="$RUNNER_TEMP/BlackHole" BUILD_SCRATCH_ROOT="$RUNNER_TEMP" bash scripts/build-dualscreen-audio.sh --mic
 
       - name: Test dynamic audio device availability
         run: |

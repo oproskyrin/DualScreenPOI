@@ -35,6 +35,10 @@ final class FrameServer {
     var onClientStats: (([String: Any]) -> Void)?
     var onClientConnected: (() -> Void)?
     var onClientDisconnected: (() -> Void)?
+    // Mic route hooks mirror the real FrameServer so the extracted wireServer
+    // extension compiles unchanged; the harness never drives 0x07.
+    var onMicPCM: ((Data) -> Void)?
+    var onMicNegotiated: ((Bool) -> Void)?
     func sendControl(_ json: [String: Any], forSession session: Int? = nil) {
         if session == nil || session == currentSession { controls.append(json) }
     }

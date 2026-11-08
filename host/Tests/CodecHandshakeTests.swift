@@ -23,6 +23,7 @@ final class HostApp {
     let clockSync = ClockSyncEcho(), inputProbe = InputProbeEcho()
     var streamW = 320, streamH = 240
     var displayID: CGDirectDisplayID = 0
+    let micRoute = MicInputRoute()
     func handleCommand(_ cmd: String, _ json: [String: Any]) {}
     func adaptBitrate(clientStats: [String: Any]) {}
 }

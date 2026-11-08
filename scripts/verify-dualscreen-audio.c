@@ -26,6 +26,7 @@ static UInt32 get(AudioObjectID object, AudioObjectPropertySelector selector, Au
     CHECK((*driver)->GetPropertyData(driver, object, 0, &a, 0, NULL, size, &used, data) == noErr);
     return used;
 }
+static const char *variantUID = "DualScreenAudio_UID";
 static void string_property(AudioObjectID object, AudioObjectPropertySelector selector, const char *expected) {
     CFStringRef value = NULL; char text[256];
     get(object, selector, kAudioObjectPropertyScopeGlobal, &value, sizeof(value));
@@ -60,9 +61,10 @@ static void wait_devices(unsigned count) {
             get(3, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal, &alive, sizeof(alive));
             get(3, kAudioDevicePropertyIsHidden, kAudioObjectPropertyScopeGlobal, &hidden, sizeof(hidden));
             CHECK(alive == count && hidden == !count);
-            CFStringRef uid = CFSTR("DualScreenAudio_UID"); AudioObjectID translated = 99; UInt32 returned;
+            CFStringRef uid = CFStringCreateWithCString(NULL, variantUID, kCFStringEncodingUTF8); AudioObjectID translated = 99; UInt32 returned;
             a = address(kAudioPlugInPropertyTranslateUIDToDevice, kAudioObjectPropertyScopeGlobal);
             CHECK((*driver)->GetPropertyData(driver, 1, 0, &a, sizeof(uid), &uid, sizeof(translated), &returned, &translated) == noErr);
+            CFRelease(uid);
             CHECK(translated == (count ? 3 : kAudioObjectUnknown));
             return;
         }
@@ -74,7 +76,7 @@ static uint64_t start_time(pid_t pid) {
     struct proc_bsdinfo info = {0}; CHECK(proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) == sizeof(info));
     return info.pbi_start_tvsec * 1000000ULL + info.pbi_start_tvusec;
 }
-static void presence_test(const char *self, const char *name) {
+static void presence_test(const char *self, const char *name, bool mic) {
     CHECK(strncmp(name, "com.oleg.dualscreen.test.", 23) == 0); // never publish production state
     int pidToken, timeToken; char companion[256]; snprintf(companion, sizeof(companion), "%s.start-time", name);
     CHECK(notify_register_check(name, &pidToken) == NOTIFY_STATUS_OK);
@@ -94,6 +96,10 @@ static void presence_test(const char *self, const char *name) {
         pid_t observer = fork(); CHECK(observer >= 0);
         if (!observer) {
             char pid[32]; snprintf(pid, sizeof(pid), "%d", child);
+            // The variant flag must reach the restricted child: it runs
+            // wait_devices against the same device UID as the parent.
+            if (mic) execl("/usr/bin/sandbox-exec", "sandbox-exec", "-p",
+                "(version 1)(allow default)(deny process-info*)", self, "--mic", "--restricted", name, pid, NULL);
             execl("/usr/bin/sandbox-exec", "sandbox-exec", "-p",
                 "(version 1)(allow default)(deny process-info*)", self, "--restricted", name, pid, NULL);
             _exit(127);
@@ -162,9 +168,25 @@ int main(int argc, char **argv) {
         return 0;
     }
     bool restricted = argc == 4 && !strcmp(argv[1], "--restricted");
-    CHECK(argc == 2 || argc == 3 || restricted);
-    const char *bundlePath = restricted ? getenv("DUALSCREEN_TEST_BUNDLE") : argv[1];
-    CHECK(bundlePath); void *bundle = dlopen(bundlePath, RTLD_NOW | RTLD_LOCAL);
+    bool mic = false;
+    const char *bundlePath = NULL, *testName = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--mic")) mic = true;
+        else if (!strcmp(argv[i], "--restricted")) {
+            // sandbox-exec child form: --restricted <notify-name> <pid>;
+            // the bundle path arrives via DUALSCREEN_TEST_BUNDLE.
+            restricted = true;
+            bundlePath = getenv("DUALSCREEN_TEST_BUNDLE");
+            break;
+        }
+        else if (!bundlePath) bundlePath = argv[i];
+        else testName = argv[i];
+    }
+    CHECK(bundlePath && (restricted || testName || mic || argc == 2));
+    // Variant UID must be fixed before the restricted branch: the
+    // sandbox-exec child also runs wait_devices against this UID.
+    variantUID = mic ? "DualScreenMic_UID" : "DualScreenAudio_UID";
+    const char *bundle = dlopen(bundlePath, RTLD_NOW | RTLD_LOCAL);
     if (!bundle) { fprintf(stderr, "%s\n", dlerror()); return 1; }
     void *(*create)(CFAllocatorRef, CFUUIDRef) = dlsym(bundle, "BlackHole_Create");
     CHECK(create); driver = create(NULL, kAudioServerPlugInTypeUUID); CHECK(driver);
@@ -178,23 +200,38 @@ int main(int argc, char **argv) {
         puts("PASS restricted child detects separate publisher via actual HAL ABI without process-info permission");
         return 0;
     }
-    CHECK(setenv("DUALSCREEN_TEST_BUNDLE", argv[1], 1) == 0);
+    CHECK(setenv("DUALSCREEN_TEST_BUNDLE", bundlePath, 1) == 0);
+    const char *expectedUID = variantUID;
+    int channels = mic ? 1 : 2;
     AudioObjectID devices[8];
     CHECK(get(kAudioObjectPlugInObject, kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, devices, sizeof(devices)) == 0);
     puts("PASS offline plug-in enumerates zero devices");
     string_property(3, kAudioObjectPropertyName, "Xiaoxin Pad Pro 12.7");
-    string_property(3, kAudioDevicePropertyDeviceUID, "DualScreenAudio_UID");
+    string_property(3, kAudioDevicePropertyDeviceUID, expectedUID);
     Float64 rate = 0; get(3, kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, &rate, sizeof(rate)); CHECK(rate == 48000);
     AudioValueRange ranges[16]; UInt32 used = get(3, kAudioDevicePropertyAvailableNominalSampleRates, kAudioObjectPropertyScopeGlobal, ranges, sizeof(ranges));
     CHECK(used == sizeof(AudioValueRange) && ranges[0].mMinimum == 48000 && ranges[0].mMaximum == 48000);
     AudioStreamBasicDescription format;
     get(7, kAudioStreamPropertyVirtualFormat, kAudioObjectPropertyScopeGlobal, &format, sizeof(format));
-    CHECK(format.mSampleRate == 48000 && format.mChannelsPerFrame == 2);
-    puts("PASS stereo; nominal and only supported sample rate = 48000 Hz");
+    CHECK(format.mSampleRate == 48000 && format.mChannelsPerFrame == channels);
+    if (mic) {
+        AudioStreamBasicDescription inFormat;
+        get(4, kAudioStreamPropertyVirtualFormat, kAudioObjectPropertyScopeGlobal, &inFormat, sizeof(inFormat));
+        CHECK(inFormat.mSampleRate == 48000 && inFormat.mChannelsPerFrame == 1);
+        UInt32 canInput = 0, canOutput = 0;
+        get(3, kAudioDevicePropertyDeviceCanBeDefaultDevice, kAudioObjectPropertyScopeInput, &canInput, sizeof(canInput));
+        get(3, kAudioDevicePropertyDeviceCanBeDefaultDevice, kAudioObjectPropertyScopeOutput, &canOutput, sizeof(canOutput));
+        CHECK(canInput == 1 && canOutput == 0);
+        puts("PASS mic variant: mono 48 kHz; defaultable as input only (output scope refuses default)");
+    } else {
+        puts("PASS stereo; nominal and only supported sample rate = 48000 Hz");
+    }
     UInt32 hidden; get(3, kAudioDevicePropertyIsHidden, kAudioObjectPropertyScopeGlobal, &hidden, sizeof(hidden)); CHECK(hidden);
     get(12, kAudioDevicePropertyIsHidden, kAudioObjectPropertyScopeGlobal, &hidden, sizeof(hidden)); CHECK(hidden);
     AudioObjectID streams[8]; used = get(12, kAudioDevicePropertyStreams, kAudioObjectPropertyScopeGlobal, streams, sizeof(streams)); CHECK(used == 0);
     puts("PASS offline primary hidden; secondary hidden with no streams");
+    AudioObjectPropertyAddress a;
+    if (!mic) {
     AudioObjectID controls[16]; used = get(3, kAudioObjectPropertyControlList, kAudioObjectPropertyScopeOutput, controls, sizeof(controls));
     int volume = 0, mute = 0; for (UInt32 i = 0; i < used / sizeof(*controls); i++) { volume |= controls[i] == 8; mute |= controls[i] == 9; }
     CHECK(volume && mute);
@@ -210,16 +247,19 @@ int main(int argc, char **argv) {
     get(9, kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal, &muted, sizeof(muted));
     CHECK(scalar == 1 && db == 0 && muted == 0);
     puts("PASS output/main control scope and element; scalar=1 dB=0 mute=0");
-    AudioObjectPropertyAddress a = address(kAudioLevelControlPropertyScalarValue, kAudioObjectPropertyScopeGlobal);
+    a = address(kAudioLevelControlPropertyScalarValue, kAudioObjectPropertyScopeGlobal);
     Boolean writable = false; CHECK((*driver)->HasProperty(driver, 8, 0, &a));
     CHECK((*driver)->IsPropertySettable(driver, 8, 0, &a, &writable) == noErr && writable);
     a = address(kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal);
     CHECK((*driver)->HasProperty(driver, 9, 0, &a));
     CHECK((*driver)->IsPropertySettable(driver, 9, 0, &a, &writable) == noErr && writable);
     puts("PASS native output master volume and mute controls exposed and writable");
+    } else {
+    puts("PASS mic variant exposes no volume/mute controls (input device)");
+    }
     a = address(kAudioDevicePropertyIcon, kAudioObjectPropertyScopeGlobal);
     CHECK(!(*driver)->HasProperty(driver, 3, 0, &a));
     puts("PASS no custom/BlackHole icon property; offline verification complete");
-    if (argc == 3) presence_test(argv[0], argv[2]);
+    if (testName) presence_test(argv[0], testName, mic);
     return 0;
 }

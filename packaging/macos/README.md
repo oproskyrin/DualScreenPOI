@@ -40,25 +40,29 @@ versions when reproducing a release.
 
 ## Installation and updates
 
-The default build requires the native HAL component at
-`dist/DualScreenAudio/DualScreenAudio-1.1.0.pkg` (or an explicit
-`AUDIO_COMPONENT_PKG` / `--audio-component-pkg` input). It validates the component
-receipt ID, branded driver UID, signature, architecture, license/NOTICE and
-self-contained corresponding-source archive before embedding it. It rejects
-unexpected payload files and audio install scripts. There is **no automatic
-fallback to the old permanent-device 1.0.0 driver**. The 1.1.0 driver supplies the
-runtime-dependent tablet-output presence behavior; build/verification of that
-behavior belongs to the audio component, not this packaging script.
+The default build requires the native HAL components at
+`dist/DualScreenAudio/DualScreenAudio-1.1.0.pkg` and
+`dist/DualScreenMic/DualScreenMic-1.1.0.pkg` (or explicit
+`AUDIO_COMPONENT_PKG` / `--audio-component-pkg` and `MIC_COMPONENT_PKG` /
+`--mic-component-pkg` inputs). It validates each component receipt ID, branded
+driver UID, signature, architecture, license/NOTICE and self-contained
+corresponding-source archive before embedding it. It rejects unexpected payload
+files and audio install scripts. There is **no automatic fallback to the old
+permanent-device 1.0.0 driver**. The 1.1.0 drivers supply the runtime-dependent
+tablet-output and tablet-mic presence behavior; build/verification of that
+behavior belongs to the audio components, not this packaging script.
 
-The default PKG is a complete first-install distribution with both components
-selected: application at `/Applications/DualScreen.app` and the same native
-`DualScreenAudio.driver` at `/Library/Audio/Plug-Ins/HAL/`, plus GPL license,
-NOTICE, pin and corresponding source under
-`/Library/Application Support/DualScreenAudio/`. It uses the existing
-`com.dualscreen.audio.installer` receipt and stable `DualScreenAudio_UID`; it
-does not create an aggregate or install a separate BlackHole device. Audio
-installation declares `RequireRestart` to macOS Installer instead of killing
-CoreAudio. The build never installs the package or restarts audio.
+The default PKG is a complete first-install distribution with all components
+selected: application at `/Applications/DualScreen.app`, the native
+`DualScreenAudio.driver` (tablet output, `DualScreenAudio_UID`) and
+`DualScreenMic.driver` (tablet microphone, `DualScreenMic_UID`) at
+`/Library/Audio/Plug-Ins/HAL/`, plus GPL license, NOTICE, pin and corresponding
+source under `/Library/Application Support/DualScreenAudio/` and
+`/Library/Application Support/DualScreenMic/`. They use the existing
+`com.dualscreen.audio.installer` and `com.dualscreen.audio.installer.mic`
+receipts; neither creates an aggregate or installs a separate BlackHole device.
+Both audio installations declare `RequireRestart` to macOS Installer instead of
+killing CoreAudio. The build never installs packages or restarts audio.
 
 Use `--app-only` only to intentionally build a PKG without the HAL component.
 The app component is nonrelocatable and atomically upgrades only the installed

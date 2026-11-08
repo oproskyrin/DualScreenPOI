@@ -22,7 +22,8 @@ class DsxpConnection(
     private val socketFactory: () -> Socket = { Socket() },
     private val supportedCodecs: (Int, Int) -> Set<VideoCodec> = { _, _ -> setOf(VideoCodec.HEVC) },
     private val preferredCodec: () -> VideoCodec = { VideoCodec.HEVC },
-    private val clipboardEnabled: () -> Boolean = { true }
+    private val clipboardEnabled: () -> Boolean = { true },
+    private val micEnabled: () -> Boolean = { false }
 ) {
     interface Listener {
         fun onAck(config: JSONObject)
@@ -51,10 +52,20 @@ class DsxpConnection(
     @Volatile private var attempt = 0L
     @Volatile private var attemptStarted = 0L
     @Volatile private var disconnectReason = "EOF"
+    // Mic 0x07 in-flight count: incremented on the caller thread, decremented
+    // after the executor task wrote the frame (or dropped the enqueue). When
+    // full, frames are refused so the capture loop drops instead of letting
+    // the send queue — and with it audio latency — grow without bound.
+    private val micBacklog = java.util.concurrent.atomic.AtomicInteger()
+    @Volatile private var micDropLogged = false
     private fun log(event: String) {
         runCatching { diagnostics("session=$sessionId attempt=$attempt $event") }
     }
-    companion object { private val nextSession = java.util.concurrent.atomic.AtomicLong() }
+    companion object {
+        private val nextSession = java.util.concurrent.atomic.AtomicLong()
+        /** Mic backlog ceiling: 4 × 20 ms frames = 80 ms of queued audio max. */
+        const val MIC_MAX_BACKLOG_FRAMES = 4
+    }
 
     fun connect(width: Int, height: Int, maxRefresh: Int) {
         synchronized(lifecycleLock) {
@@ -119,8 +130,9 @@ class DsxpConnection(
                 .put("preferredCodec", preferredCodec().wire)
                 .put("name", android.os.Build.MODEL)
             if (clipboardEnabled()) hello.put("clipboard", true)
+            if (micEnabled()) hello.put("mic", true)
             sendFrame(0x00, hello.toString().toByteArray())
-            log("hello queued version=1 width=$width height=$height maxRefresh=$maxRefresh clipboard=${clipboardEnabled()}")
+            log("hello queued version=1 width=$width height=$height maxRefresh=$maxRefresh clipboard=${clipboardEnabled()} mic=${micEnabled()}")
 
             while (running.get() && !userClosed) {
                 val type = input.read()
@@ -204,6 +216,24 @@ class DsxpConnection(
         sendFrame(0x06, json.toString().toByteArray(Charsets.UTF_8))
     }
 
+    /**
+     * Mic capture frame (0x07, docs/mic-0x07.md). Non-blocking: queued to
+     * sendExecutor like every other send. Returns false — and sends nothing —
+     * when the backlog is full or the session is down. Payload bytes go only
+     * to the socket; nothing is logged.
+     */
+    fun sendMic(payload: ByteArray): Boolean {
+        if (userClosed || !running.get()) return false
+        if (micBacklog.get() >= MIC_MAX_BACKLOG_FRAMES) {
+            if (!micDropLogged) { micDropLogged = true; log("mic send dropped reason=backlog") }
+            return false
+        }
+        micBacklog.incrementAndGet()
+        micDropLogged = false
+        sendFrame(0x07, payload) { micBacklog.decrementAndGet() }
+        return true
+    }
+
     fun sendStats(json: JSONObject) {
         // "t1" (android uptime ns) drives the NTP-lite clock sync exchange.
         latency?.stampOutgoingStats(json)
@@ -219,30 +249,32 @@ class DsxpConnection(
         }
     }
 
-    private fun sendFrame(type: Int, payload: ByteArray) {
-        if (userClosed || !running.get()) return
-        val target = output ?: return
+    private fun sendFrame(type: Int, payload: ByteArray, sent: (() -> Unit)? = null) {
+        if (userClosed || !running.get()) { sent?.invoke(); return }
+        val target = output ?: run { sent?.invoke(); return }
         try { sendExecutor.execute {
-            synchronized(sendLock) {
-                // Never replay queued input into a subsequent connection.
-                if (userClosed || output !== target) return@execute
-                val out = target
-                try {
-                    out.write(type)
-                    out.writeInt(payload.size)
-                    out.write(payload)
-                    out.flush()
-                } catch (e: Exception) {
-                    synchronized(lifecycleLock) {
-                        if (output === target) {
-                            disconnectReason = "send failure ${e.javaClass.name}: ${e.message.orEmpty()}"
-                            log(disconnectReason)
-                            runCatching { socket?.close() }
+            try {
+                synchronized(sendLock) {
+                    // Never replay queued input into a subsequent connection.
+                    if (userClosed || output !== target) return@execute
+                    val out = target
+                    try {
+                        out.write(type)
+                        out.writeInt(payload.size)
+                        out.write(payload)
+                        out.flush()
+                    } catch (e: Exception) {
+                        synchronized(lifecycleLock) {
+                            if (output === target) {
+                                disconnectReason = "send failure ${e.javaClass.name}: ${e.message.orEmpty()}"
+                                log(disconnectReason)
+                                runCatching { socket?.close() }
+                            }
                         }
                     }
                 }
-            }
-        } } catch (_: java.util.concurrent.RejectedExecutionException) { /* closed */ }
+            } finally { sent?.invoke() }
+        } } catch (_: java.util.concurrent.RejectedExecutionException) { sent?.invoke() }
     }
 
     fun close() {

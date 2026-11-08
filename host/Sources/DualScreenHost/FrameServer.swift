@@ -13,6 +13,10 @@ import Network
 ///     immediately before its paired 0x01 frame)
 ///   type 0x06 = clipboard text (JSON, both ways, only when the client hello
 ///     advertises "clipboard": true — see docs/clipboard-sync.md)
+///   type 0x07 = mic PCM (PCM16LE mono 48 kHz, tablet -> mac, only when the
+///     client hello advertises "mic": true — see docs/mic-0x07.md). Raw PCM,
+///     never JSON; delivered to onMicPCM on the connection queue, where the
+///     route drops it silently when mic is not negotiated or the HAL is absent.
 ///
 /// Handshake: the client connects and sends type 0x00
 /// {"magic":"DSXP","version":1,"width":W,"height":H,"maxRefresh":R}.
@@ -37,6 +41,9 @@ final class FrameServer {
     /// advertised "clipboard": true. Created/destroyed on `queue` together
     /// with clientHello so replacement and EOF teardown stay exactly-once.
     private var clipboardSync: ClipboardSync?
+    /// Mic capability of the current client ("mic": true in the DSXP hello).
+    /// Reset on every new session and teardown, like mediaEnabled.
+    private var micNegotiated = false
     private let log: HostLog
     private var sessionNumber = 0
     private var sessionStarted = DispatchTime.now()
@@ -56,6 +63,13 @@ final class FrameServer {
     var onClientStats: (([String: Any]) -> Void)?
     var onClientConnected: (() -> Void)?
     var onClientDisconnected: (() -> Void)?
+    /// Raw 0x07 mic PCM payload (PCM16LE mono 48 kHz), delivered on the
+    /// connection queue. The sink must never block this queue; the route
+    /// drops frames silently when mic was not negotiated or the HAL is absent.
+    var onMicPCM: ((Data) -> Void)?
+    /// Tracks the hello "mic" capability for the current session (cleared on
+    /// accept/teardown). Called on the connection queue.
+    var onMicNegotiated: ((Bool) -> Void)?
 
     private var rxBuffer = Data()
 
@@ -128,6 +142,8 @@ final class FrameServer {
         connection = conn
         clientHello = nil
         mediaEnabled = false
+        micNegotiated = false
+        onMicNegotiated?(false)
         clipboardSync?.stop()
         clipboardSync = nil
         rxBuffer.removeAll(keepingCapacity: true)
@@ -161,6 +177,8 @@ final class FrameServer {
         connection = nil
         clientHello = nil
         mediaEnabled = false
+        micNegotiated = false
+        onMicNegotiated?(false)
         clipboardSync?.stop()
         clipboardSync = nil
         rxBuffer.removeAll(keepingCapacity: true)
@@ -212,13 +230,26 @@ final class FrameServer {
     }
 
     private func handleFrame(type: UInt8, payload: Data) {
+        // Mic PCM is raw bytes, never JSON: hand it straight to the route.
+        // Forwarding stays unconditional — MicInputRoute drops silently when
+        // this session's hello did not advertise mic.
+        if type == 0x07 {
+            onMicPCM?(payload)
+            return
+        }
         guard let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
             log.write("session=\(sessionNumber) unparseable frame type=\(type) bytes=\(payload.count)")
             return
         }
         switch type {
         case 0x00:
-            if json["magic"] as? String == "DSXP" { mediaEnabled = false }
+            if json["magic"] as? String == "DSXP" {
+                mediaEnabled = false
+                // Capability flag from a fresh hello; a re-hello without the
+                // flag renegotiates mic off, commands (no magic) don't.
+                micNegotiated = (json["mic"] as? Bool) == true
+                onMicNegotiated?(micNegotiated)
+            }
             if clientHello == nil { log.write("session=\(sessionNumber) first control received") }
             clientHello = json
             configureClipboard(hello: json)

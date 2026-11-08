@@ -61,22 +61,36 @@ def sign_own(path, identity):
     run(*args, path)
 
 
-def validate_audio_component(package, scratch, arch):
+def validate_audio_component(package, scratch, arch, variant="audio"):
     """Inspect only; never execute installer scripts or register a HAL driver."""
-    expanded = scratch / "audio-expanded"
+    if variant == "mic":
+        driver_rel = Path("Library/Audio/Plug-Ins/HAL/DualScreenMic.driver")
+        support_rel = Path("Library/Application Support/DualScreenMic")
+        installer_id = "com.dualscreen.audio.installer.mic"
+        bundle_id = "com.dualscreen.audio.driver.mic"
+        executable = "DualScreenMic"
+        uid = "DualScreenMic_UID"
+        source_archive = "DualScreenMic-source.tar.gz"
+    else:
+        driver_rel = Path("Library/Audio/Plug-Ins/HAL/DualScreenAudio.driver")
+        support_rel = Path("Library/Application Support/DualScreenAudio")
+        installer_id = "com.dualscreen.audio.installer"
+        bundle_id = "com.dualscreen.audio.driver"
+        executable = "DualScreenAudio"
+        uid = "DualScreenAudio_UID"
+        source_archive = "DualScreenAudio-source.tar.gz"
+    expanded = scratch / f"audio-expanded-{variant}"
     run("/usr/sbin/pkgutil", "--expand-full", package, expanded)
     infos = list(expanded.rglob("PackageInfo"))
     if len(infos) != 1:
         raise ValueError("audio input must be one flat component PKG, not a distribution")
     info_path = infos[0]
     info = ET.parse(info_path).getroot()
-    if info.attrib.get("identifier") != "com.dualscreen.audio.installer" or info.attrib.get("install-location") != "/":
-        raise ValueError("audio component must use com.dualscreen.audio.installer at /")
+    if info.attrib.get("identifier") != installer_id or info.attrib.get("install-location") != "/":
+        raise ValueError(f"audio component must use {installer_id} at /")
     if (info_path.parent / "Scripts").exists() or info.find("scripts") is not None:
         raise ValueError("audio component must not run installer scripts or restart CoreAudio")
     payload = info_path.parent / "Payload"
-    driver_rel = Path("Library/Audio/Plug-Ins/HAL/DualScreenAudio.driver")
-    support_rel = Path("Library/Application Support/DualScreenAudio")
     for path in payload.rglob("*"):
         relative = path.relative_to(payload)
         if path.is_dir() and not path.is_symlink():
@@ -86,20 +100,20 @@ def validate_audio_component(package, scratch, arch):
     driver = payload / driver_rel
     support = payload / support_rel
     plist = plistlib.loads((driver / "Contents/Info.plist").read_bytes())
-    if plist.get("CFBundleIdentifier") != "com.dualscreen.audio.driver":
+    if plist.get("CFBundleIdentifier") != bundle_id:
         raise ValueError("wrong branded audio driver bundle identifier")
-    binary = driver / "Contents/MacOS/DualScreenAudio"
+    binary = driver / f"Contents/MacOS/{executable}"
     validate_binary(binary, arch)
     strings = run("/usr/bin/strings", binary, capture=True)
-    if "DualScreenAudio_UID" not in strings:
-        raise ValueError("audio driver does not retain DualScreenAudio_UID")
+    if uid not in strings:
+        raise ValueError(f"audio driver does not retain {uid}")
     run("/usr/bin/codesign", "--verify", "--strict", driver)
     if "GNU GENERAL PUBLIC LICENSE" not in (support / "LICENSE").read_text():
         raise ValueError("audio payload lacks GPL license")
     for required in (support / "NOTICE.txt", support / "UPSTREAM_SHA", driver / "Contents/Resources/LICENSE", driver / "Contents/Resources/NOTICE.txt"):
         if not required.is_file():
             raise ValueError(f"required audio attribution missing: {required}")
-    with tarfile.open(support / "DualScreenAudio-source.tar.gz", "r:gz") as archive:
+    with tarfile.open(support / source_archive, "r:gz") as archive:
         names = {name.removeprefix("./") for name in archive.getnames()}
         required = {"LICENSE", "NOTICE.txt", "UPSTREAM_SHA", "build-dualscreen-audio.sh", "verify-dualscreen-audio.c", "modified/BlackHole.c", "modified/DualScreenAudioConfig.h", "modified/Info.plist", "upstream/BlackHole/BlackHole.c", "upstream/LICENSE"}
         if not required.issubset(names):
@@ -107,7 +121,7 @@ def validate_audio_component(package, scratch, arch):
     return info.attrib["version"]
 
 
-def write_distribution(path, app_version, audio_version):
+def write_distribution(path, app_version, audio_version, mic_version=None):
     distribution = ET.Element("installer-gui-script", {"minSpecVersion": "2"})
     ET.SubElement(distribution, "title").text = "DualScreen"
     ET.SubElement(distribution, "options", {"customize": "never", "require-scripts": "false", "rootVolumeOnly": "true", "hostArchitectures": "arm64"})
@@ -115,12 +129,16 @@ def write_distribution(path, app_version, audio_version):
     os_versions = ET.SubElement(distribution, "allowed-os-versions")
     ET.SubElement(os_versions, "os-version", {"min": "13.0"})
     outline = ET.SubElement(distribution, "choices-outline")
-    for choice, identifier, title, filename, version in (("app", "com.oleg.dualscreen.installer", "DualScreen application", "DualScreenApp.pkg", app_version), ("audio", "com.dualscreen.audio.installer", "DualScreen tablet audio output", "DualScreenAudio.pkg", audio_version)):
+    choices = [("app", "com.oleg.dualscreen.installer", "DualScreen application", "DualScreenApp.pkg", app_version),
+               ("audio", "com.dualscreen.audio.installer", "DualScreen tablet audio output", "DualScreenAudio.pkg", audio_version)]
+    if mic_version is not None:
+        choices.append(("mic", "com.dualscreen.audio.installer.mic", "DualScreen tablet microphone input", "DualScreenMic.pkg", mic_version))
+    for choice, identifier, title, filename, version in choices:
         ET.SubElement(outline, "line", {"choice": choice})
         element = ET.SubElement(distribution, "choice", {"id": choice, "title": title, "visible": "false", "start_selected": "true"})
         ET.SubElement(element, "pkg-ref", {"id": identifier})
         attributes = {"id": identifier, "version": version, "auth": "Root"}
-        if choice == "audio":
+        if choice in ("audio", "mic"):
             attributes["onConclusion"] = "RequireRestart"
         ET.SubElement(distribution, "pkg-ref", attributes).text = filename
     ET.ElementTree(distribution).write(path, encoding="utf-8", xml_declaration=True)
@@ -140,6 +158,7 @@ def main():
     parser.add_argument("--codesign-identity", default=os.environ.get("CODESIGN_IDENTITY", "-"))
     parser.add_argument("--installer-identity", default=os.environ.get("INSTALLER_IDENTITY"))
     parser.add_argument("--audio-component-pkg", type=Path, default=Path(os.environ.get("AUDIO_COMPONENT_PKG", ROOT / "dist/DualScreenAudio/DualScreenAudio-1.1.0.pkg")), help="verified native HAL component for full first-install setup (required by default)")
+    parser.add_argument("--mic-component-pkg", type=Path, default=Path(os.environ.get("MIC_COMPONENT_PKG", ROOT / "dist/DualScreenMic/DualScreenMic-1.1.0.pkg")), help="verified native mic HAL component for full first-install setup")
     parser.add_argument("--app-only", action="store_true", help="explicitly build an app-only installer (no HAL); ZIP updates are always app-only")
     args = parser.parse_args()
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", args.version):
@@ -154,6 +173,8 @@ def main():
         parser.error("macOS packaging requires macOS and Command Line Tools")
     if not args.app_only and not args.audio_component_pkg.is_file():
         parser.error("full installer requires AUDIO_COMPONENT_PKG / --audio-component-pkg; use --app-only only intentionally")
+    if not args.app_only and not args.mic_component_pkg.is_file():
+        parser.error("full installer requires MIC_COMPONENT_PKG / --mic-component-pkg (build it with scripts/build-dualscreen-audio.sh --mic)")
     framework = args.sparkle_framework.resolve()
     if not (framework / "Sparkle").is_file():
         parser.error(f"Sparkle.framework missing: {framework}; resolve SwiftPM dependencies or set SPARKLE_FRAMEWORK")
@@ -186,6 +207,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="dualscreen-packaging-", dir=scratch_root) as directory:
         scratch = Path(directory)
         audio_version = None if args.app_only else validate_audio_component(args.audio_component_pkg.resolve(), scratch, args.arch)
+        mic_version = None if args.app_only else validate_audio_component(args.mic_component_pkg.resolve(), scratch, args.arch, variant="mic")
         root = scratch / "payload"
         app = root / "DualScreen.app"
         contents = app / "Contents"
@@ -224,8 +246,9 @@ def main():
         run(*pkg_args, app_package)
         if not args.app_only:
             shutil.copy2(args.audio_component_pkg, scratch / "DualScreenAudio.pkg")
+            shutil.copy2(args.mic_component_pkg, scratch / "DualScreenMic.pkg")
             distribution = scratch / "Distribution.xml"
-            write_distribution(distribution, args.version, audio_version)
+            write_distribution(distribution, args.version, audio_version, mic_version)
             product_args = ["/usr/bin/productbuild", "--distribution", distribution, "--package-path", scratch]
             if args.installer_identity:
                 product_args += ["--sign", args.installer_identity, "--timestamp"]

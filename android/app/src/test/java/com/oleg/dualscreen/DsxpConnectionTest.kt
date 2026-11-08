@@ -60,6 +60,46 @@ class DsxpConnectionTest {
             } finally { connection.close(); socket.close() }
         }
     }
+    @Test fun micFramesDropWhenSendQueueBacksUpAndHelloAdvertisesMic() {
+        val connected = java.util.concurrent.CountDownLatch(1)
+        val released = java.util.concurrent.CountDownLatch(1)
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val socket = object : Socket() {
+            override fun connect(endpoint: SocketAddress?, timeout: Int) {}
+            override fun getInputStream() = object : java.io.InputStream() {
+                override fun read(): Int {
+                    connected.countDown()
+                    released.await(5, TimeUnit.SECONDS)
+                    throw SocketException("read closed")
+                }
+            }
+            override fun getOutputStream() = object : java.io.OutputStream() {
+                // Default write(byte[],off,len) loops write(int): the first
+                // byte parks the single send thread until release.
+                override fun write(value: Int) { released.await(5, TimeUnit.SECONDS) }
+            }
+            override fun close() { released.countDown(); super.close() }
+        }
+        val connection = DsxpConnection("192.0.2.1", 7381, listener,
+            diagnostics = { events.add(it) }, socketFactory = { socket },
+            micEnabled = { true })
+        try {
+            connection.connect(100, 100, 60)
+            assertTrue(readingConnected(connected))
+            assertTrue("hello advertises mic", events.any { it.contains("hello queued") && it.contains("mic=true") })
+            // Hello occupies the executor; each accepted mic frame counts
+            // toward MIC_MAX_BACKLOG_FRAMES, the rest are refused (dropped).
+            var accepted = 0
+            val frame = ByteArray(1920)
+            repeat(10) { if (connection.sendMic(frame)) accepted++ }
+            assertEquals(DsxpConnection.MIC_MAX_BACKLOG_FRAMES, accepted)
+        } finally {
+            connection.close()
+            socket.close()
+        }
+    }
+    private fun readingConnected(latch: java.util.concurrent.CountDownLatch): Boolean =
+        latch.await(2, TimeUnit.SECONDS)
     @Test fun closeInterruptsPendingConnectAndDoesNotRetry() {
         val entered = CountDownLatch(1)
         val closed = CountDownLatch(1)

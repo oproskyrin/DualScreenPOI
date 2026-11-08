@@ -216,6 +216,13 @@ final class HostApp {
     private var menuBar: MenuBar?
     private let terminationPreparation = TerminationPreparation()
     private let audioPresence = AudioDevicePresence()
+    /// Mic HAL heartbeat on a separate Darwin notification name, with inert
+    /// routing: a microphone publisher never restores a default *output*.
+    private let micPresence = AudioDevicePresence(
+        notificationName: MicInputRoute.presenceNotificationName,
+        routing: .inert)
+    /// 0x07 tablet PCM → DualScreenMic HAL ring feed.
+    private let micRoute = MicInputRoute()
     /// NTP-lite echo of the client's last t1 (see TimingCoordinator.swift).
     private let clockSync = ClockSyncEcho()
     /// Raw echo of the last input ts probe; host does no offset math.
@@ -253,6 +260,8 @@ final class HostApp {
             exit(1)
         }
         audioPresence.start()
+        micRoute.start()
+        micPresence.start()
         let inputAccess = CGPreflightPostEventAccess()
         HostLog.shared.write("input permission granted=\(inputAccess)")
         if !inputAccess { _ = CGRequestPostEventAccess() }
@@ -475,6 +484,14 @@ final class HostApp {
                 print("[ds] client disconnected; display stays, pipeline idles")
             }
         }
+        // 0x07 tablet mic → DualScreenMic HAL. Both callbacks stay on the
+        // server queue; the route drops silently per docs/mic-0x07.md.
+        server.onMicPCM = { [weak micRoute] pcm in
+            micRoute?.accept(pcm)
+        }
+        server.onMicNegotiated = { [weak micRoute] flag in
+            micRoute?.setNegotiated(flag)
+        }
     }
 
     private func handleCommand(_ cmd: String, _ json: [String: Any]) {
@@ -613,9 +630,12 @@ final class HostApp {
             print("\n[ds] shutting down…")
             HostLog.shared.write("host shutdown requested")
             audioPresence.stop()
+            micRoute.stop()
+            micPresence.stop()
             timers.forEach { $0.invalidate() }; timers.removeAll()
             signalSources.forEach { $0.cancel() }; signalSources.removeAll()
             server.onControl = nil; server.onInput = nil
+            server.onMicPCM = nil; server.onMicNegotiated = nil
             server.onClientStats = nil; server.onClientConnected = nil; server.onClientDisconnected = nil
             injector?.reset(); injector = nil
             arrangement.detach()

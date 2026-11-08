@@ -17,6 +17,17 @@ struct AudioPresenceRouting {
             builtInUID: { NativePresenceRouting.outputs().first { $0.builtIn }?.uid },
             setDefaultUID: { NativePresenceRouting.select($0) })
     }
+
+    /// Publishers that own no output route (e.g. the mic HAL heartbeat) must
+    /// never snapshot, restore or touch the default output: every lookup is
+    /// empty and every restore is a no-op.
+    static var inert: AudioPresenceRouting {
+        AudioPresenceRouting(
+            defaultUID: { nil },
+            availableUIDs: { [] },
+            builtInUID: { nil },
+            setDefaultUID: { _ in false })
+    }
 }
 
 private enum NativePresenceRouting {

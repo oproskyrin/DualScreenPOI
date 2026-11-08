@@ -65,7 +65,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statsBoxRef: android.widget.LinearLayout
     private lateinit var kbBuffer: EditText
     private var state = State.IDLE
-    private var connection: DsxpConnection? = null
+    @Volatile private var connection: DsxpConnection? = null
     @Volatile private var decoder: VideoDecoder? = null
     private val decoderSupport = DecoderSupport.system()
     @Volatile private var preferredCodec = VideoCodec.HEVC
@@ -86,6 +86,15 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var clipboardEnabled = true
     private var clipboardRetryQueued = false
     private val clipboardSync = ClipboardSyncCore()
+    // Mic streaming gate, read from the capture thread → volatile.
+    @Volatile private var micEnabled = false
+    private var micDenied = false
+    private var micStream: MicStreamer? = null
+    private var micSwitch: Switch? = null
+    private var micHint: TextView? = null
+    private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        onMicPermissionResult(granted)
+    }
     private val clipboardManager by lazy { getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener { onPrimaryClipChanged() }
     private val physicalInput = PhysicalInputState()
@@ -179,6 +188,7 @@ class MainActivity : AppCompatActivity() {
         localCursor = prefs.getBoolean("local_cursor", true)
         physicalInputEnabled = prefs.getBoolean("physical_input", true)
         clipboardEnabled = prefs.getBoolean("clipboard_sync", true)
+        micEnabled = prefs.getBoolean("mic_enabled", false)
         @Suppress("DEPRECATION") // registerListener(listener, handler) is API 34+; device runs 13
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         requestedHz = prefs.getInt("requested_hz", 120)
@@ -445,6 +455,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun connectTo(endpoint: Endpoint, wifi: Boolean) {
         resetPhysicalInput()
+        stopMic()
         stopDiscovery()
         val token: Long
         synchronized(mediaLock) {
@@ -493,6 +504,9 @@ class MainActivity : AppCompatActivity() {
                     relayoutStream(pendingWidth, pendingHeight)
                     if (wifi) prefs.edit().putString("wifi_addr", endpoint.address).apply()
                     setState(State.STREAMING)
+                    // Session negotiated (hello advertised mic via micHelloFlag):
+                    // (re)start capture when enabled and permitted.
+                    startMicIfEnabled()
                     if (!keyboardVisible && settingsDialog?.isShowing != true && notificationExplanation?.isShowing != true) surfaceView.requestFocus()
                     if (settingsDialog?.isShowing == true) showSettings()
                     hideSystemUi()
@@ -553,6 +567,9 @@ class MainActivity : AppCompatActivity() {
                     if (!session.accepts(token) || callbackEpoch.get() != epoch) return@post
                     resetPhysicalInput(send = false)
                     hideKeyboard()
+                    // Drop goes through here; a reconnect re-starts mic on the
+                    // next onAck when enabled and permitted.
+                    stopMic()
                     handler.removeCallbacks(statsUpdater)
                     setState(State.RECONNECTING, "Восстанавливаем связь · ${if (wifi) endpoint.host else "USB"}\nПроверьте ${if (wifi) "Wi-Fi и приложение на Mac" else "кабель и USB-туннель на Mac"}")
                 }
@@ -560,7 +577,8 @@ class MainActivity : AppCompatActivity() {
         }
         connection = DsxpConnection(endpoint.host, endpoint.port, listener, diagnostics = clientLog::event,
             latency = tracker, supportedCodecs = decoderSupport::supported,
-            preferredCodec = { preferredCodec }, clipboardEnabled = { clipboardEnabled })
+            preferredCodec = { preferredCodec }, clipboardEnabled = { clipboardEnabled },
+            micEnabled = { micHelloFlag() })
             .also { it.connect(size.x, size.y, requestedHz) }
     }
 
@@ -640,6 +658,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun disconnectHome() {
         resetPhysicalInput()
+        stopMic()
         stopSessionNotification()
         synchronized(mediaLock) {
             session.cancel(); streaming = false
@@ -864,13 +883,90 @@ class MainActivity : AppCompatActivity() {
             }
         })
         ui.label(panel, "Текстовые фрагменты синхронизируются с Mac в обе стороны, пока идёт соединение. Текст никогда не попадает в журнал: только размер и хеш.", 13f, ui.muted)
-        settingsDialog = AlertDialog.Builder(this).setTitle("Настройки DualScreen").setView(ui.scroll(panel)).setPositiveButton("Готово", null).show()
+        ui.label(panel, "МИКРОФОН НА MAC", 12f, ui.accent, true)
+        micSwitch = Switch(this).apply {
+            text = "Передавать микрофон"; setTextColor(ui.ink); isChecked = micEnabled; minHeight = ui.dp(48)
+            contentDescription = "Передавать микрофон"
+            setOnCheckedChangeListener { _, enabled ->
+                when {
+                    // Toggle off (or a leftover revert): stop recording now.
+                    !enabled -> { micDenied = false; setMicEnabled(false); stopMic(); updateMicHint() }
+                    hasMicPermission() -> { micDenied = false; setMicEnabled(true); startMicIfEnabled(); updateMicHint() }
+                    // First enable asks for the runtime permission; the switch
+                    // only turns on after a grant (onMicPermissionResult).
+                    else -> { isChecked = false; micPermission.launch(Manifest.permission.RECORD_AUDIO) }
+                }
+            }
+        }
+        panel.addView(micSwitch)
+        micHint = ui.label(panel, micHintText(), 13f, ui.muted)
+        settingsDialog = AlertDialog.Builder(this).setTitle("Настройки DualScreen").setView(ui.scroll(panel)).setPositiveButton("Готово", null)
+            .setOnDismissListener { settingsDialog = null; micSwitch = null; micHint = null }
+            .show()
     }
 
     private fun choose(title: String, options: Array<String>, current: Int, selected: (Int) -> Unit) {
         AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(options, current) { dialog, index -> selected(index); dialog.dismiss() }
             .setNegativeButton("Отмена", null).show()
     }
+
+    // ------------------------------------------------------------- microphone
+    // Tablet mic → Mac input device, DSXP 0x07 (docs/mic-0x07.md).
+    // Recording only happens with the toggle on AND the runtime permission
+    // granted; toggling off or disconnecting stops AudioRecord immediately.
+    // Frames leave only through the socket — no audio bytes in ClientLog.
+
+    private fun hasMicPermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /** Hello flag, same rules as clipboard: legacy peers ignore it. */
+    private fun micHelloFlag() = micEnabled && hasMicPermission()
+
+    private fun startMicIfEnabled() {
+        if (!micEnabled || !hasMicPermission() || !streaming) return
+        if (micStream?.isRunning == true) return
+        micStream?.stop()
+        // A fresh MicStreamer per start: the sender resolves the current
+        // connection; frames after a session change drop harmlessly.
+        val stream = MicStreamer(recorder = AudioRecordMicRecorder(),
+            sender = { bytes -> connection?.sendMic(bytes) ?: false },
+            logEvent = clientLog::event)
+        stream.permissionGranted = true
+        if (stream.start()) micStream = stream
+    }
+
+    private fun stopMic() {
+        val stream = micStream ?: return
+        micStream = null
+        stream.stop()
+    }
+
+    private fun setMicEnabled(enabled: Boolean) {
+        micEnabled = enabled
+        prefs.edit().putBoolean("mic_enabled", enabled).apply()
+    }
+
+    private fun onMicPermissionResult(granted: Boolean) {
+        if (granted) {
+            micDenied = false
+            setMicEnabled(true)
+            startMicIfEnabled()
+        } else {
+            // Denial keeps the toggle off and surfaces the hint.
+            micDenied = true
+            setMicEnabled(false)
+            stopMic()
+        }
+        micSwitch?.isChecked = granted && micEnabled
+        updateMicHint()
+    }
+
+    private fun micHintText() = buildString {
+        append("Микрофон планшета передаётся на Mac как устройство ввода во время соединения. Запись включается только этим переключателем, звук в журнал не пишется.")
+        if (micDenied) append(" Нужно разрешение на микрофон.")
+    }
+
+    private fun updateMicHint() { micHint?.text = micHintText() }
 
     private fun resetPhysicalInput(send: Boolean = true) {
         val reset = physicalInput.reset(android.os.SystemClock.uptimeMillis())
@@ -1073,6 +1169,7 @@ class MainActivity : AppCompatActivity() {
         notificationExplanation?.dismiss()
         stopSessionNotification()
         session.cancel(); stopDiscovery(); handler.removeCallbacksAndMessages(null)
+        stopMic()
         synchronized(mediaLock) { streaming = false; connection?.close(); decoder?.stop(); decoder = null; audioPlayer.stop() }
         clientLog.close()
         super.onDestroy()

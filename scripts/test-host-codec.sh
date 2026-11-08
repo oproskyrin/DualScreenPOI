@@ -42,6 +42,7 @@ support = Path('host/Tests/CodecPipelineTests.swift').read_text().split('@main s
 work.joinpath('Support.swift').write_text(support)
 PY
 xcrun swiftc host/Sources/DualScreenHost/CodecNegotiation.swift \
-    host/Sources/DualScreenHost/TimingCoordinator.swift "$WORK/Pipeline.swift" \
+    host/Sources/DualScreenHost/TimingCoordinator.swift host/Sources/DualScreenHost/MicInputRoute.swift \
+    "$WORK/Pipeline.swift" \
     "$WORK/Support.swift" "$WORK/Handshake.swift" host/Tests/CodecHandshakeTests.swift -o "$WORK/handshake"
 "$WORK/handshake"

@@ -1,10 +1,28 @@
 #!/bin/bash
 # Local GPLv3 HAL driver build. Never installs, removes drivers, or restarts audio.
+# Modes: default builds the DualScreenAudio output HAL; `--mic` builds the
+# DualScreenMic input HAL (mono, UID DualScreenMic_UID) from the same pinned
+# sources. Both variants coexist: distinct bundle IDs, UIDs and notify names.
 set -euo pipefail
 PIN=574029f0d3175ccf29a826d74be4da3967b1cb92
 VERSION=1.1.0
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT=${1:-"$HERE/../dist/DualScreenAudio"}
+MODE=output
+if [[ "${1:-}" == "--mic" ]]; then MODE=mic; shift; fi
+if [[ "$MODE" == mic ]]; then
+    DRIVER_NAME=DualScreenMic
+    DRIVER_BUNDLE_ID=com.dualscreen.audio.driver.mic
+    INSTALLER_ID=com.dualscreen.audio.installer.mic
+    DRIVER_UID=DualScreenMic_UID
+    PRESENCE_NOTIFY_NAME=com.oleg.dualscreen.host.mic-pid
+else
+    DRIVER_NAME=DualScreenAudio
+    DRIVER_BUNDLE_ID=com.dualscreen.audio.driver
+    INSTALLER_ID=com.dualscreen.audio.installer
+    DRIVER_UID=DualScreenAudio_UID
+    PRESENCE_NOTIFY_NAME=com.oleg.dualscreen.host.audio-pid
+fi
+OUT=${1:-"$HERE/../dist/$DRIVER_NAME"}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 SCRATCH=${BUILD_SCRATCH_ROOT:-"$HOME/.hermes/cache/scratch"}
@@ -17,14 +35,17 @@ mkdir -p "$SOURCE/upstream" "$SOURCE/modified"
 if [[ -f "$HERE/upstream/BlackHole/BlackHole.c" && -f "$HERE/UPSTREAM_SHA" ]]; then
     [[ $(cat "$HERE/UPSTREAM_SHA") == "$PIN" ]] || { printf 'Unexpected source pin\n' >&2; exit 1; }
     cp -R "$HERE/upstream/." "$SOURCE/upstream/"
-elif [[ -z ${BLACKHOLE_SOURCE:-} && -f "$OUT/DualScreenAudio-source.tar.gz" ]]; then
-    tar -xzf "$OUT/DualScreenAudio-source.tar.gz" -C "$SOURCE" ./upstream ./UPSTREAM_SHA
+elif [[ -z ${BLACKHOLE_SOURCE:-} && -f "$HERE/../dist/DualScreenAudio/DualScreenAudio-source.tar.gz" ]]; then
+    tar -xzf "$HERE/../dist/DualScreenAudio/DualScreenAudio-source.tar.gz" -C "$SOURCE" ./upstream ./UPSTREAM_SHA
     [[ $(cat "$SOURCE/UPSTREAM_SHA") == "$PIN" ]] || { printf 'Unexpected archive pin\n' >&2; exit 1; }
 else
     UPSTREAM=${BLACKHOLE_SOURCE:-/Users/oleg/.hermes/cache/scratch/dualscreen-blackhole}
     git -C "$UPSTREAM" cat-file -e "$PIN^{commit}"
     git -C "$UPSTREAM" archive "$PIN" | tar -xf - -C "$SOURCE/upstream"
 fi
+# The mic variant shares the pinned upstream with the output HAL; only the
+# config header, plist identity, two scope-split default-device properties,
+# the compiled notify name and the packaging identifiers differ.
 printf '%s\n' "$PIN" > "$SOURCE/UPSTREAM_SHA"
 printf '%s\n' "$VERSION" > "$SOURCE/VERSION"
 cat > "$SOURCE/PRESENCE_PROTOCOL.txt" <<'PROTOCOL'
@@ -75,21 +96,54 @@ Tests prove API topology/notify behavior, not installed Sound UI/cache/fallback.
 Run source-only Swift/ABI tests and rebuild: bash scripts/test-host-audio-presence.sh --hal
 An installed-device/System Settings regression requires separate user approval.
 PROTOCOL
+if [[ "$MODE" == mic ]]; then
+    sed -i '' 's/audio-pid/mic-pid/g' "$SOURCE/PRESENCE_PROTOCOL.txt"
+    printf '%s\n' "DualScreenMic variant: the identical contract runs on the mic notify" \
+        "name, published by the same host process via AudioDevicePresence with" \
+        "inert routing - it never touches the default output route." >> "$SOURCE/PRESENCE_PROTOCOL.txt"
+fi
 cp "$0" "$SOURCE/build-dualscreen-audio.sh"
 cp "$HERE/verify-dualscreen-audio.c" "$SOURCE/verify-dualscreen-audio.c"
 cp "$HERE/DualScreenAudioPresence.h" "$SOURCE/modified/DualScreenAudioPresence.h"
 cp "$HERE/DualScreenAudioPresence.h" "$SOURCE/DualScreenAudioPresence.h"
 # Include the real host publisher and device-free lifecycle/ownership/routing tests.
 # The root recipe still rebuilds independently using only the original CLT tools.
-if [[ -f "$HERE/host/Sources/DualScreenHost/AudioDevicePresence.swift" ]]; then
+if [[ -f "$HERE/host/Sources/DualScreenHost/MicInputRoute.swift" ]]; then
     HOST_SOURCE_ROOT="$HERE" # extracted corresponding-source archive
 else
     HOST_SOURCE_ROOT="$HERE/.."
 fi
 mkdir -p "$SOURCE/host/Sources/DualScreenHost" "$SOURCE/host/Tests" "$SOURCE/scripts"
 cp "$HOST_SOURCE_ROOT/host/Sources/DualScreenHost/AudioDevicePresence.swift" "$SOURCE/host/Sources/DualScreenHost/"
+cp "$HOST_SOURCE_ROOT/host/Sources/DualScreenHost/MicInputRoute.swift" "$SOURCE/host/Sources/DualScreenHost/"
 cp "$HOST_SOURCE_ROOT/host/Tests/AudioDevicePresenceTests.swift" "$SOURCE/host/Tests/"
+cp "$HOST_SOURCE_ROOT/host/Tests/MicInputRouteTests.swift" "$SOURCE/host/Tests/"
 cp "$HOST_SOURCE_ROOT/scripts/test-host-audio-presence.sh" "$SOURCE/scripts/"
+cp "$HOST_SOURCE_ROOT/scripts/test-host-mic.sh" "$SOURCE/scripts/"
+if [[ "$MODE" == mic ]]; then
+cat > "$SOURCE/modified/DualScreenAudioConfig.h" <<'HEADER'
+/* DualScreen local customization; original source copyright/license preserved.
+ * DualScreenMic variant: mono 48 kHz input device fed by the host over 0x07. */
+#define kDriver_Name "DualScreenMic"
+#define kPlugIn_BundleID "com.dualscreen.audio.driver.mic"
+#define kPlugIn_Icon ""
+#define kHas_Driver_Name_Format false
+#define kDevice_Name "Xiaoxin Pad Pro 12.7"
+#define kDevice2_Name "DualScreenMic (disabled mirror)"
+#define kManufacturer_Name "DualScreen"
+#define kNumber_Of_Channels 1
+#define kSampleRates 48000
+#define kDevice_IsHidden false
+#define kDevice_HasInput true
+#define kDevice_HasOutput true
+#define kDevice2_IsHidden true
+#define kDevice2_HasInput false
+#define kDevice2_HasOutput false
+#define kEnableVolumeControl false
+#define kCanBeDefaultDevice true
+#define kCanBeDefaultSystemDevice false
+HEADER
+else
 cat > "$SOURCE/modified/DualScreenAudioConfig.h" <<'HEADER'
 /* DualScreen local customization; original source copyright/license preserved. */
 #define kDriver_Name "DualScreenAudio"
@@ -111,11 +165,13 @@ cat > "$SOURCE/modified/DualScreenAudioConfig.h" <<'HEADER'
 #define kCanBeDefaultDevice true
 #define kCanBeDefaultSystemDevice true
 HEADER
+fi
 # Remove the optional icon property instead of returning a broken URL or artwork.
-python3 - "$SOURCE" <<'PY'
+python3 - "$SOURCE" "$MODE" <<'PY'
 from pathlib import Path
 import re, sys, plistlib
 root = Path(sys.argv[1])
+mic = sys.argv[2] == 'mic'
 s = (root/'upstream/BlackHole/BlackHole.c').read_text()
 s = '/* Modified for DualScreen: icon property disabled; see NOTICE.txt. */\n' + s
 label = '\t\tcase kAudioDevicePropertyIcon:\n'
@@ -173,13 +229,54 @@ for function, body in (
     start = s.index('static OSStatus\t' + function + '(')
     pos = s.index('switch(inObjectID)', start)
     s = s[:pos] + body + s[pos:]
+if mic:
+    # Mic variant: the device feeds its ring from host playback, so an output
+    # stream must exist — but it must never become a default *output*.
+    # Scope-split both default properties: input keeps kCanBeDefault*, output
+    # always refuses, so the mic never captures the system output route.
+    old = '\t\t\t*((UInt32*)outData) = kCanBeDefaultDevice;'
+    assert s.count(old) == 1
+    s = s.replace(old, '\t\t\t*((UInt32*)outData) = inAddress->mScope == kAudioObjectPropertyScopeOutput ? 0 : kCanBeDefaultDevice;')
+    old = '\t\t\t*((UInt32*)outData) = kCanBeDefaultSystemDevice;'
+    assert s.count(old) == 1
+    s = s.replace(old, '\t\t\t*((UInt32*)outData) = inAddress->mScope == kAudioObjectPropertyScopeOutput ? 0 : kCanBeDefaultSystemDevice;')
 (root/'modified/BlackHole.c').write_text(s)
+name = 'DualScreenMic' if mic else 'DualScreenAudio'
 p = plistlib.loads((root/'upstream/BlackHole/BlackHole.plist').read_bytes())
-p.update(CFBundleExecutable='DualScreenAudio', CFBundleIdentifier='com.dualscreen.audio.driver',
-         CFBundleName='DualScreenAudio', CFBundleShortVersionString='1.1.0', CFBundleVersion='1.1.0')
+p.update(CFBundleExecutable=name, CFBundleIdentifier='com.dualscreen.audio.driver.mic' if mic else 'com.dualscreen.audio.driver',
+         CFBundleName=name, CFBundleShortVersionString='1.1.0', CFBundleVersion='1.1.0')
 p.pop('CFBundleIconFile', None)
 (root/'modified/Info.plist').write_bytes(plistlib.dumps(p))
 PY
+if [[ "$MODE" == mic ]]; then
+cat > "$SOURCE/NOTICE.txt" <<'NOTICE'
+DualScreenMic is a modified BlackHole audio HAL driver, GPL-3.0.
+Original copyright: Copyright (C) 2019 Existential Audio Inc.
+See upstream/LICENSE for the complete unaltered copyright and GPLv3 license.
+Local changes (version 1.1.0): dedicated mono 48 kHz microphone input variant,
+coexists with the DualScreenAudio output HAL (distinct bundle id, UID
+DualScreenMic_UID, notify name com.oleg.dualscreen.host.mic-pid); the same
+dynamic notify-heartbeat device presence contract as the output HAL; the
+device is defaultable as an INPUT only — both default-device properties refuse
+the output scope; the always-present output stream exists solely as the host
+ring-buffer feed path (PCM reaches the ring through ordinary CoreAudio
+playback, never direct coreaudiod access); no volume/mute controls; secondary
+device hidden with no streams; control enumeration and icon fixes as in the
+output HAL; no upstream artwork is used by the compiled driver. Upstream
+symbols retain their names for attribution.
+Corresponding source, exact upstream pin, configuration, verifier and full CLT
+build/package recipe are in this archive. Rebuild on macOS with CLT and Python 3:
+  bash build-dualscreen-audio.sh --mic "$HOME/DualScreenMic-rebuild"
+The bundle is ad-hoc signed; the local installer is unsigned and not notarized.
+The installer has no installation scripts: it never removes existing drivers,
+restarts coreaudiod or changes any selected system audio device.
+No installation or system audio changes are performed by this build script.
+Public redistribution/integration licensing must be evaluated separately; this
+artifact does not license other DualScreen components or grant trademark rights.
+The archived original upstream source includes unmodified historical artwork;
+none is copied into the customized driver bundle or used as its branding.
+NOTICE
+else
 cat > "$SOURCE/NOTICE.txt" <<'NOTICE'
 DualScreenAudio is a modified BlackHole audio HAL driver, GPL-3.0.
 Original copyright: Copyright (C) 2019 Existential Audio Inc.
@@ -205,27 +302,35 @@ artifact does not license other DualScreen components or grant trademark rights.
 The archived original upstream source includes unmodified historical artwork;
 none is copied into the customized driver bundle or used as its branding.
 NOTICE
+fi
 cp "$SOURCE/upstream/LICENSE" "$SOURCE/LICENSE"
 ROOT="$WORK/payload"
-DRIVER="$ROOT/Library/Audio/Plug-Ins/HAL/DualScreenAudio.driver"
-SUPPORT="$ROOT/Library/Application Support/DualScreenAudio"
+DRIVER="$ROOT/Library/Audio/Plug-Ins/HAL/$DRIVER_NAME.driver"
+SUPPORT="$ROOT/Library/Application Support/$DRIVER_NAME"
 mkdir -p "$DRIVER/Contents/MacOS" "$DRIVER/Contents/Resources" "$SUPPORT"
 cp "$SOURCE/modified/Info.plist" "$DRIVER/Contents/Info.plist"
 cp "$SOURCE/LICENSE" "$SOURCE/NOTICE.txt" "$DRIVER/Contents/Resources/"
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 xcrun clang --version
 # kHas_Driver_Name_Format=false leaves an unreachable printf-style branch.
+# The shipped driver publishes on the variant's own notify name; the presence
+# test bundle below keeps the isolated com.oleg.dualscreen.test.* name.
 xcrun clang -arch arm64 -isysroot "$SDK" -mmacosx-version-min=13.0 \
   -std=gnu11 -O2 -fblocks -Wno-format-extra-args -bundle -include "$SOURCE/modified/DualScreenAudioConfig.h" \
+  -DDS_AUDIO_PRESENCE_NOTIFY_NAME="\"$PRESENCE_NOTIFY_NAME\"" \
   "$SOURCE/modified/BlackHole.c" -framework CoreAudio -framework CoreFoundation \
-  -framework Accelerate -o "$DRIVER/Contents/MacOS/DualScreenAudio"
+  -framework Accelerate -o "$DRIVER/Contents/MacOS/$DRIVER_NAME"
 chmod -R u=rwX,go=rX "$ROOT"
 codesign --force --sign - --timestamp=none "$DRIVER"
 codesign --verify --strict --verbose=2 "$DRIVER"
 plutil -lint "$DRIVER/Contents/Info.plist"
-xcrun lipo -info "$DRIVER/Contents/MacOS/DualScreenAudio"
+xcrun lipo -info "$DRIVER/Contents/MacOS/$DRIVER_NAME"
 xcrun clang "$SOURCE/verify-dualscreen-audio.c" -framework CoreAudio -framework CoreFoundation -o "$WORK/verify-dualscreen-audio"
-"$WORK/verify-dualscreen-audio" "$DRIVER/Contents/MacOS/DualScreenAudio"
+if [[ "$MODE" == mic ]]; then
+    "$WORK/verify-dualscreen-audio" "$DRIVER/Contents/MacOS/$DRIVER_NAME" --mic
+else
+    "$WORK/verify-dualscreen-audio" "$DRIVER/Contents/MacOS/$DRIVER_NAME"
+fi
 # Exercise the actual plug-in ABI with a mock HAL host, isolated from installed
 # audio. Only the notification name differs from the shipped binary.
 TEST_NAME="com.oleg.dualscreen.test.audio-presence.$$"
@@ -234,10 +339,14 @@ xcrun clang -arch arm64 -isysroot "$SDK" -mmacosx-version-min=13.0 \
   -DDS_AUDIO_PRESENCE_NOTIFY_NAME=\""$TEST_NAME"\" \
   -include "$SOURCE/modified/DualScreenAudioConfig.h" "$SOURCE/modified/BlackHole.c" \
   -framework CoreAudio -framework CoreFoundation -framework Accelerate -o "$WORK/presence-test.bundle"
-"$WORK/verify-dualscreen-audio" "$WORK/presence-test.bundle" "$TEST_NAME"
+if [[ "$MODE" == mic ]]; then
+    "$WORK/verify-dualscreen-audio" "$WORK/presence-test.bundle" --mic "$TEST_NAME"
+else
+    "$WORK/verify-dualscreen-audio" "$WORK/presence-test.bundle" "$TEST_NAME"
+fi
 # Source and recipe accompany the binary, both externally and in pkg payload.
-COPYFILE_DISABLE=1 tar -czf "$OUT/DualScreenAudio-source.tar.gz" -C "$SOURCE" .
-cp "$OUT/DualScreenAudio-source.tar.gz" "$SUPPORT/"
+COPYFILE_DISABLE=1 tar -czf "$OUT/$DRIVER_NAME-source.tar.gz" -C "$SOURCE" .
+cp "$OUT/$DRIVER_NAME-source.tar.gz" "$SUPPORT/"
 cp "$SOURCE/LICENSE" "$SOURCE/NOTICE.txt" "$SOURCE/UPSTREAM_SHA" "$SOURCE/VERSION" "$SOURCE/PRESENCE_PROTOCOL.txt" "$SUPPORT/"
 pkgbuild --analyze --root "$ROOT" "$WORK/components.plist"
 # Force exact payload paths: do not relocate a pre-existing bundle elsewhere.
@@ -250,14 +359,14 @@ for entry in entries:
     entry['BundleOverwriteAction'] = 'upgrade'
 with open(p, 'wb') as f: plistlib.dump(entries, f)
 PY
-PKG="$OUT/DualScreenAudio-$VERSION.pkg"
+PKG="$OUT/$DRIVER_NAME-$VERSION.pkg"
 pkgbuild --root "$ROOT" --component-plist "$WORK/components.plist" \
-  --identifier com.dualscreen.audio.installer --version "$VERSION" \
+  --identifier "$INSTALLER_ID" --version "$VERSION" \
   --ownership recommended --install-location / "$PKG"
 # Local copies are for inspection, not HAL registration or installation.
-if [[ -e "$OUT/DualScreenAudio.driver" ]]; then rm -rf "$OUT/DualScreenAudio.driver"; fi
-cp -R "$DRIVER" "$OUT/DualScreenAudio.driver"
+if [[ -e "$OUT/$DRIVER_NAME.driver" ]]; then rm -rf "$OUT/$DRIVER_NAME.driver"; fi
+cp -R "$DRIVER" "$OUT/$DRIVER_NAME.driver"
 cp "$WORK/verify-dualscreen-audio" "$OUT/verify-dualscreen-audio"
 cp "$SOURCE/NOTICE.txt" "$SOURCE/UPSTREAM_SHA" "$OUT/"
-shasum -a 256 "$PKG" "$OUT/DualScreenAudio-source.tar.gz"
-printf 'PKG=%s\nDRIVER_UID=DualScreenAudio_UID\nSOURCE_SHA=%s\n' "$PKG" "$PIN"
+shasum -a 256 "$PKG" "$OUT/$DRIVER_NAME-source.tar.gz"
+printf 'PKG=%s\nDRIVER_UID=%s\nSOURCE_SHA=%s\n' "$PKG" "$DRIVER_UID" "$PIN"

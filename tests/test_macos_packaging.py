@@ -26,7 +26,7 @@ class PackagingInputTests(unittest.TestCase):
         spec.loader.exec_module(builder)
         with tempfile.TemporaryDirectory(dir=SCRATCH) as work:
             path = Path(work) / "Distribution.xml"
-            builder.write_distribution(path, "0.13.0", "1.1.0")
+            builder.write_distribution(path, "0.13.0", "1.1.0", "1.1.0")
             options = ET.parse(path).getroot().find("options")
             self.assertIsNotNone(options)
             assert options is not None
@@ -113,7 +113,7 @@ class RealArtifactTests(unittest.TestCase):
         self.assertEqual(restart, "RequireRestart")
         choices_xml = subprocess.check_output(["/usr/sbin/installer", "-showChoicesXML", "-pkg", str(packages[0]), "-target", "/"])
         selected = {p["choiceIdentifier"]: p["choiceIsSelected"] for root in plistlib.loads(choices_xml) for p in root["childItems"]}
-        self.assertEqual(selected, {"app": 1, "audio": 1})
+        self.assertEqual(selected, {"app": 1, "audio": 1, "mic": 1})
         with tempfile.TemporaryDirectory(dir=SCRATCH) as scratch:
             scratch = Path(scratch)
             subprocess.run(["ditto", "-x", "-k", str(archives[0]), str(scratch / "zip")], check=True)
@@ -123,7 +123,7 @@ class RealArtifactTests(unittest.TestCase):
             subprocess.run(["pkgutil", "--expand-full", str(packages[0]), str(scratch / "pkg")], check=True)
             info_files = list((scratch / "pkg").rglob("PackageInfo"))
             infos = {ET.parse(p).getroot().attrib["identifier"]: (p, ET.parse(p).getroot()) for p in info_files}
-            self.assertEqual(set(infos), {"com.oleg.dualscreen.installer", "com.dualscreen.audio.installer"})
+            self.assertEqual(set(infos), {"com.oleg.dualscreen.installer", "com.dualscreen.audio.installer", "com.dualscreen.audio.installer.mic"})
             app_info_path, info = infos["com.oleg.dualscreen.installer"]
             self.assertEqual(info.attrib["install-location"], "/Applications")
             app_payload = app_info_path.parent / "Payload"
@@ -141,11 +141,27 @@ class RealArtifactTests(unittest.TestCase):
             self.assertIn("GNU GENERAL PUBLIC LICENSE", (support / "LICENSE").read_text())
             self.assertTrue((support / "DualScreenAudio-source.tar.gz").is_file())
             self.assertFalse((audio_path.parent / "Scripts").exists())
+            mic_path, mic_info = infos["com.dualscreen.audio.installer.mic"]
+            self.assertEqual(mic_info.attrib["install-location"], "/")
+            self.assertEqual(mic_info.attrib["version"], os.environ.get("DUALSCREEN_TEST_MIC_VERSION", "1.1.0"))
+            mic_payload = mic_path.parent / "Payload"
+            mic_driver = mic_payload / "Library/Audio/Plug-Ins/HAL/DualScreenMic.driver"
+            self.assertEqual([p.name for p in mic_driver.parent.iterdir()], ["DualScreenMic.driver"])
+            self.assertEqual(plistlib.loads((mic_driver / "Contents/Info.plist").read_bytes())["CFBundleIdentifier"], "com.dualscreen.audio.driver.mic")
+            subprocess.run(["codesign", "--verify", "--strict", str(mic_driver)], check=True)
+            mic_strings = subprocess.check_output(["strings", str(mic_driver / "Contents/MacOS/DualScreenMic")], text=True)
+            self.assertIn("DualScreenMic_UID", mic_strings)
+            mic_support = mic_payload / "Library/Application Support/DualScreenMic"
+            self.assertIn("GNU GENERAL PUBLIC LICENSE", (mic_support / "LICENSE").read_text())
+            self.assertTrue((mic_support / "DualScreenMic-source.tar.gz").is_file())
+            self.assertFalse((mic_path.parent / "Scripts").exists())
             distribution = ET.parse(scratch / "pkg/Distribution").getroot()
             audio_ref = next(p for p in distribution.findall("pkg-ref") if p.attrib["id"] == "com.dualscreen.audio.installer" and p.text)
             self.assertEqual(audio_ref.attrib["onConclusion"], "RequireRestart")
+            mic_ref = next(p for p in distribution.findall("pkg-ref") if p.attrib["id"] == "com.dualscreen.audio.installer.mic" and p.text)
+            self.assertEqual(mic_ref.attrib["onConclusion"], "RequireRestart")
             choices = distribution.findall("choice")
-            self.assertEqual(len(choices), 2)
+            self.assertEqual(len(choices), 3)
             self.assertTrue(all(p.attrib["start_selected"] == "true" for p in choices))
             component = plistlib.loads((self.output / "component.plist").read_bytes())[0]
             self.assertFalse(component["BundleIsRelocatable"])
