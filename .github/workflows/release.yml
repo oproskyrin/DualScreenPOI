@@ -47,6 +47,9 @@ jobs:
       - name: Test adaptive bitrate policy
         run: bash scripts/test-host-bitrate.sh
 
+      - name: Test clipboard sync core
+        run: bash scripts/test-host-clipboard.sh
+
       - name: Test codec negotiation and AVC/HEVC hardware round trips
         run: bash scripts/test-host-codec.sh
 

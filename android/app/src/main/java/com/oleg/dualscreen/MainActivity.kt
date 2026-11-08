@@ -3,6 +3,8 @@ package com.oleg.dualscreen
 import android.annotation.SuppressLint
 import android.Manifest
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -78,6 +80,12 @@ class MainActivity : AppCompatActivity() {
     private var audioEnabled = true
     private var localCursor = true
     private var physicalInputEnabled = true
+    // Clipboard sync gate, read from the network thread → volatile.
+    @Volatile private var clipboardEnabled = true
+    private var clipboardRetryQueued = false
+    private val clipboardSync = ClipboardSyncCore()
+    private val clipboardManager by lazy { getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
+    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener { onPrimaryClipChanged() }
     private val physicalInput = PhysicalInputState()
     private val clientLog by lazy { ClientLog({ getExternalFilesDir(null)?.let { java.io.File(it, "logs") } }) }
     private val inputManager by lazy { getSystemService(INPUT_SERVICE) as InputManager }
@@ -164,6 +172,9 @@ class MainActivity : AppCompatActivity() {
         audioEnabled = prefs.getBoolean("audio_enabled", true)
         localCursor = prefs.getBoolean("local_cursor", true)
         physicalInputEnabled = prefs.getBoolean("physical_input", true)
+        clipboardEnabled = prefs.getBoolean("clipboard_sync", true)
+        @Suppress("DEPRECATION") // registerListener(listener, handler) is API 34+; device runs 13
+        clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         requestedHz = prefs.getInt("requested_hz", 120)
         preferredCodec = VideoCodec.preference(prefs.getString("preferred_codec", null))
         handleX = prefs.getFloat("toolbar_x", 1f)
@@ -502,6 +513,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onAudio(pcm: ByteArray) { synchronized(mediaLock) { if (session.accepts(token) && streaming && audioEnabled) audioPlayer.feed(pcm) } }
             override fun onStats(stats: JSONObject) { if (session.accepts(token)) lastHostStats = stats }
+            override fun onClipboard(text: String, hash: String) { if (session.accepts(token)) onClipboardIncoming(text, hash) }
             override fun onRejected(reason: String) {
                 val epoch = callbackEpoch.incrementAndGet()
                 synchronized(mediaLock) {
@@ -533,7 +545,8 @@ class MainActivity : AppCompatActivity() {
         }
         connection = DsxpConnection(endpoint.host, endpoint.port, listener, diagnostics = clientLog::event,
             latency = tracker, supportedCodecs = decoderSupport::supported,
-            preferredCodec = { preferredCodec }).also { it.connect(size.x, size.y, requestedHz) }
+            preferredCodec = { preferredCodec }, clipboardEnabled = { clipboardEnabled })
+            .also { it.connect(size.x, size.y, requestedHz) }
     }
 
     private fun updateSessionNotification() {
@@ -826,6 +839,16 @@ class MainActivity : AppCompatActivity() {
             }
         })
         ui.label(panel, "Рисует указатель на планшете сразу под пальцем, пока изображение с Mac догоняет. На сам ввод не влияет.", 13f, ui.muted)
+        ui.label(panel, "ОБЩИЙ БУФЕР ОБМЕНА", 12f, ui.accent, true)
+        panel.addView(Switch(this).apply {
+            text = "Общий буфер обмена"; setTextColor(ui.ink); isChecked = clipboardEnabled; minHeight = ui.dp(48)
+            contentDescription = "Общий буфер обмена"
+            setOnCheckedChangeListener { _, enabled ->
+                clipboardEnabled = enabled
+                prefs.edit().putBoolean("clipboard_sync", enabled).apply()
+            }
+        })
+        ui.label(panel, "Текстовые фрагменты синхронизируются с Mac в обе стороны, пока идёт соединение. Текст никогда не попадает в журнал: только размер и хеш.", 13f, ui.muted)
         settingsDialog = AlertDialog.Builder(this).setTitle("Настройки DualScreen").setView(ui.scroll(panel)).setPositiveButton("Готово", null).show()
     }
 
@@ -916,6 +939,59 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendKeyChar(value: String) { if (streaming) connection?.sendInput(JSONObject().put("t", "key").put("ch", value)) }
     private fun sendKeySpecial(value: String) { if (streaming) connection?.sendInput(JSONObject().put("t", "key").put("special", value)) }
+
+    /** Current primary clip as text, or null when there is nothing readable. */
+    private fun currentClipboardText(): String? {
+        val clip = clipboardManager.primaryClip ?: return null
+        if (clip.itemCount == 0) return null
+        @Suppress("DEPRECATION") // Item.getText misses coerced URI/intents; coerceToText covers them
+        val text = clip.getItemAt(0).coerceToText(this)?.toString().orEmpty()
+        return text.ifEmpty { null }
+    }
+
+    /** Outgoing clipboard sync (doc: docs/clipboard-sync.md). Runs on the main thread. */
+    private fun onPrimaryClipChanged() {
+        if (!streaming || !clipboardEnabled) return
+        val text = currentClipboardText() ?: return
+        when (val decision = clipboardSync.onLocalChange(text)) {
+            is ClipboardSyncCore.LocalDecision.Send -> {
+                clientLog.event("clipboard out bytes=${text.toByteArray(Charsets.UTF_8).size} hash=${decision.hash}")
+                // sendClipboard only queues to the send executor — never touch
+                // the socket directly here, and never wrap in a bare
+                // runCatching: a swallowed NetworkOnMainThreadException once
+                // made sends vanish silently.
+                connection?.sendClipboard(decision.text, decision.hash)
+                clipboardRetryQueued = false
+            }
+            ClipboardSyncCore.LocalDecision.RateLimited -> {
+                // Latest clip wins: re-read and retry after the 300 ms window.
+                if (clipboardRetryQueued) return
+                clipboardRetryQueued = true
+                handler.postDelayed({
+                    clipboardRetryQueued = false
+                    if (streaming && clipboardEnabled) onPrimaryClipChanged()
+                }, ClipboardSyncCore.RATE_LIMIT_MS)
+            }
+            // Echo of a clip we just applied locally — stay silent.
+            ClipboardSyncCore.LocalDecision.Echo,
+            ClipboardSyncCore.LocalDecision.Oversized -> clipboardRetryQueued = false
+        }
+    }
+
+    /** Incoming 0x06 from DsxpConnection; called on the network thread. */
+    private fun onClipboardIncoming(text: String, hash: String) {
+        if (!streaming || !clipboardEnabled) return
+        if (!clipboardSync.onIncoming(text, hash)) return // echo of our own send
+        clientLog.event("clipboard in bytes=${text.toByteArray(Charsets.UTF_8).size} hash=$hash")
+        handler.post {
+            // lastKnownHash is already set, so the setPrimaryClip echo below
+            // matches in onPrimaryClipChanged and is not sent back.
+            runCatching { clipboardManager.setPrimaryClip(ClipData.newPlainText("dsxp", text)) }
+                .onFailure { clientLog.event("clipboard apply failed ${it.javaClass.simpleName}") }
+            Toast.makeText(this, "Буфер обмена: ${text.take(24)}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun toggleKeyboard() {
         resetPhysicalInput()
         if (keyboardVisible) { hideKeyboard(); return }
@@ -977,6 +1053,7 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onDestroy() {
         resetPhysicalInput()
+        @Suppress("DEPRECATION") clipboardManager.removePrimaryClipChangedListener(clipboardListener)
         inputManager.unregisterInputDeviceListener(inputDeviceListener)
         notificationExplanation?.dismiss()
         stopSessionNotification()

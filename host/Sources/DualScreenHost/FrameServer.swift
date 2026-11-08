@@ -11,6 +11,8 @@ import Network
 ///   type 0x04 = audio (PCM, mac -> tablet)
 ///   type 0x05 = video timing sidecar (JSON, mac -> tablet, sent
 ///     immediately before its paired 0x01 frame)
+///   type 0x06 = clipboard text (JSON, both ways, only when the client hello
+///     advertises "clipboard": true — see docs/clipboard-sync.md)
 ///
 /// Handshake: the client connects and sends type 0x00
 /// {"magic":"DSXP","version":1,"width":W,"height":H,"maxRefresh":R}.
@@ -31,6 +33,10 @@ final class FrameServer {
     private(set) var connection: NWConnection?
     private var clientHello: [String: Any]?
     private var mediaEnabled = false
+    /// Clipboard sync session for the current client; nil unless the hello
+    /// advertised "clipboard": true. Created/destroyed on `queue` together
+    /// with clientHello so replacement and EOF teardown stay exactly-once.
+    private var clipboardSync: ClipboardSync?
     private let log: HostLog
     private var sessionNumber = 0
     private var sessionStarted = DispatchTime.now()
@@ -122,6 +128,8 @@ final class FrameServer {
         connection = conn
         clientHello = nil
         mediaEnabled = false
+        clipboardSync?.stop()
+        clipboardSync = nil
         rxBuffer.removeAll(keepingCapacity: true)
         sessionNumber += 1
         sessionStarted = .now()
@@ -153,6 +161,8 @@ final class FrameServer {
         connection = nil
         clientHello = nil
         mediaEnabled = false
+        clipboardSync?.stop()
+        clipboardSync = nil
         rxBuffer.removeAll(keepingCapacity: true)
         conn.stateUpdateHandler = nil
         conn.cancel()
@@ -187,7 +197,10 @@ final class FrameServer {
                 | Int(rxBuffer[rxBuffer.startIndex + 3]) << 8
                 | Int(rxBuffer[rxBuffer.startIndex + 4])
             // Client traffic is small JSON, never video or audio. Bound malformed frames.
-            guard len <= 1 << 20 else {
+            // Clipboard text may JSON-escape past 1 MiB while the text itself
+            // stays within the 1 MiB cap, so 0x06 gets extra headroom (2 MiB).
+            let inboundLimit = type == 0x06 ? 2 << 20 : 1 << 20
+            guard len <= inboundLimit else {
                 if let conn = connection { teardown(conn, reason: "invalid incoming frame length=\(len)") }
                 return
             }
@@ -208,14 +221,35 @@ final class FrameServer {
             if json["magic"] as? String == "DSXP" { mediaEnabled = false }
             if clientHello == nil { log.write("session=\(sessionNumber) first control received") }
             clientHello = json
+            configureClipboard(hello: json)
             onControl?(json)
         case 0x02:
             onInput?(json)
         case 0x03:
             onClientStats?(json)
+        case 0x06:
+            clipboardSync?.handleIncoming(payload: payload)
         default:
             break
         }
+    }
+
+    /// Enable clipboard sync only when the hello carries "clipboard": true
+    /// (docs/clipboard-sync.md capability negotiation). Legacy clients omit
+    /// the flag and get no sync, no error.
+    private func configureClipboard(hello: [String: Any]) {
+        guard (hello["clipboard"] as? Bool) == true else { return }
+        guard clipboardSync == nil else { return }
+        let sync = ClipboardSync(log: log) { [weak self] payload in
+            self?.sendClipboard(payload)
+        }
+        clipboardSync = sync
+        sync.start()
+    }
+
+    /// Local clip -> tablet, through the shared serial send queue.
+    private func sendClipboard(_ payload: Data) {
+        send(type: 0x06, payload: payload)
     }
 
     // MARK: - Sending

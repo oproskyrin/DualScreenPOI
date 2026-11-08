@@ -21,7 +21,8 @@ class DsxpConnection(
     private val latency: LatencyTracker? = null,
     private val socketFactory: () -> Socket = { Socket() },
     private val supportedCodecs: (Int, Int) -> Set<VideoCodec> = { _, _ -> setOf(VideoCodec.HEVC) },
-    private val preferredCodec: () -> VideoCodec = { VideoCodec.HEVC }
+    private val preferredCodec: () -> VideoCodec = { VideoCodec.HEVC },
+    private val clipboardEnabled: () -> Boolean = { true }
 ) {
     interface Listener {
         fun onAck(config: JSONObject)
@@ -29,6 +30,8 @@ class DsxpConnection(
         fun onAudio(pcm: ByteArray) {}
         fun onStats(stats: JSONObject)
         fun onDisconnected(reason: String?)
+        /** Incoming 0x06 clipboard text; called on the network thread. */
+        fun onClipboard(text: String, hash: String) {}
         /** Terminal handshake error: do not retry an unsupported decoder forever. */
         fun onRejected(reason: String) { onDisconnected(reason) }
     }
@@ -115,8 +118,9 @@ class DsxpConnection(
                 .put("codecs", org.json.JSONArray(VideoCodec.entries.filter { it in offered }.map { it.wire }))
                 .put("preferredCodec", preferredCodec().wire)
                 .put("name", android.os.Build.MODEL)
+            if (clipboardEnabled()) hello.put("clipboard", true)
             sendFrame(0x00, hello.toString().toByteArray())
-            log("hello queued version=1 width=$width height=$height maxRefresh=$maxRefresh")
+            log("hello queued version=1 width=$width height=$height maxRefresh=$maxRefresh clipboard=${clipboardEnabled()}")
 
             while (running.get() && !userClosed) {
                 val type = input.read()
@@ -151,6 +155,19 @@ class DsxpConnection(
                     // Video timing JSON immediately preceding its 0x01 frame.
                     0x05 -> runCatching { latency?.onVideoTiming(JSONObject(String(payload))) }
                     0x04 -> if (negotiated) listener.onAudio(payload)
+                    // Clipboard: the 1 MiB cap applies to the text itself, so
+                    // check the decoded text (the JSON envelope adds ~30 bytes).
+                    // Drops log size only, never content.
+                    0x06 -> if (negotiated) try {
+                        val json = JSONObject(String(payload, Charsets.UTF_8))
+                        val text = json.optString("text")
+                        val textBytes = text.toByteArray(Charsets.UTF_8).size
+                        if (textBytes > ClipboardSyncCore.MAX_BYTES) {
+                            log("clipboard in dropped bytes=$textBytes reason=over-cap")
+                        } else listener.onClipboard(text, json.optString("hash"))
+                    } catch (e: org.json.JSONException) {
+                        log("clipboard in dropped reason=invalid-json")
+                    }
                 }
             }
             return true
@@ -180,6 +197,12 @@ class DsxpConnection(
 
     /** Remote control commands (setMode/setLogical/setFps), type 0x00. */
     fun sendCommand(json: JSONObject) = sendFrame(0x00, json.toString().toByteArray())
+
+    /** Outgoing clipboard sync, frame 0x06. Non-blocking: queued to sendExecutor. */
+    fun sendClipboard(text: String, hash: String) {
+        val json = JSONObject().put("v", 1).put("text", text).put("hash", hash)
+        sendFrame(0x06, json.toString().toByteArray(Charsets.UTF_8))
+    }
 
     fun sendStats(json: JSONObject) {
         // "t1" (android uptime ns) drives the NTP-lite clock sync exchange.
