@@ -73,7 +73,17 @@ final class DisplayCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let stream else { return }
         self.stream = nil
         serial += 1
-        Task { try? await stream.stopCapture() }
+        // stopCapture is async; WAIT for it to finish. Sample buffers already
+        // queued on the handler queues reference the display's IOSurfaces —
+        // releasing the virtual display before the stream drains over-releases
+        // them (EXC_BAD_ACCESS in objc_release on mode switches, non-
+        // deterministic because it depends on how many frames are in flight).
+        let drained = DispatchSemaphore(value: 0)
+        Task {
+            try? await stream.stopCapture()
+            drained.signal()
+        }
+        _ = drained.wait(timeout: .now() + 3)
     }
 
     // MARK: SCStreamOutput

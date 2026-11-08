@@ -85,15 +85,13 @@ uint32_t vd_create_display(uint32_t pixelW, uint32_t pixelH,
     BOOL ok = [display applySettings:settings];
     if (!ok) {
         fprintf(stderr, "[vd] applySettings failed\n");
-        // Display object still live; drop it.
-        CFRelease((__bridge CFTypeRef)display);
+        // Display object still live; ARC releases it when the local goes away.
         return 0;
     }
 
     uint32_t displayID = display.displayID;
     if (displayID == 0 || displayID == kCGNullDirectDisplay) {
         fprintf(stderr, "[vd] null displayID\n");
-        CFRelease((__bridge CFTypeRef)display);
         return 0;
     }
 
@@ -102,8 +100,10 @@ uint32_t vd_create_display(uint32_t pixelW, uint32_t pixelH,
 }
 
 void vd_release_display(void) {
-    if (_vd != nil) {
-        CFRelease((__bridge CFTypeRef)_vd);
-        _vd = nil;
-    }
+    // _vd is an ARC strong reference: assigning nil releases the display
+    // exactly once. The old CFRelease((__bridge CFTypeRef)_vd) here was an
+    // UNBALANCED extra release on top of ARC's own — the object died while
+    // CoreDisplay's VirtualDisplayListener still referenced it, and the next
+    // objc_release hit freed memory (EXC_BAD_ACCESS on mode switches).
+    _vd = nil;
 }

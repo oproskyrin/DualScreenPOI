@@ -15,6 +15,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -126,6 +128,19 @@ class MainActivity : AppCompatActivity() {
     /** "12 мс" or "—" when no sane measurement exists yet. */
     private fun fmtMs(ms: Double): String =
         if (ms.isFinite() && ms >= 0.0) String.format(Locale.getDefault(), "%.0f мс", ms) else "—"
+
+    /** Short haptic feedback for connection events; safe anywhere, no-op without a vibrator. */
+    private fun buzz(pattern: LongArray) {
+        runCatching {
+            val v = (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator) ?: return
+            if (Build.VERSION.SDK_INT >= 31) {
+                v.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(pattern, -1)
+            }
+        }
+    }
 
     private val statsUpdater = object : Runnable {
         override fun run() {
@@ -504,6 +519,7 @@ class MainActivity : AppCompatActivity() {
                     relayoutStream(pendingWidth, pendingHeight)
                     if (wifi) prefs.edit().putString("wifi_addr", endpoint.address).apply()
                     setState(State.STREAMING)
+                    buzz(pattern = longArrayOf(0, 40))
                     // Session negotiated (hello advertised mic via micHelloFlag):
                     // (re)start capture when enabled and permitted.
                     startMicIfEnabled()
@@ -570,6 +586,7 @@ class MainActivity : AppCompatActivity() {
                     // Drop goes through here; a reconnect re-starts mic on the
                     // next onAck when enabled and permitted.
                     stopMic()
+                    buzz(pattern = longArrayOf(0, 30, 80, 30))
                     handler.removeCallbacks(statsUpdater)
                     setState(State.RECONNECTING, "Восстанавливаем связь · ${if (wifi) endpoint.host else "USB"}\nПроверьте ${if (wifi) "Wi-Fi и приложение на Mac" else "кабель и USB-туннель на Mac"}")
                 }
@@ -830,6 +847,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
         ui.label(panel, "Панель сейчас: ${panelDisplay.refreshRate.roundToInt()} Гц. На Mac задано: ${if (connected) config.optInt("fps", 120).toString() else "—"} fps. Декодер фактически: ${if (connected) (decoder?.fps ?: 0.0).roundToInt().toString() else "—"} fps. Android может ограничивать частоту.", 13f, ui.muted)
+        ui.label(panel, "ПРЕСЕТЫ", 12f, ui.accent, true)
+        // Presets = mode + fps combos through the same 0x00 commands the
+        // settings rows use; no new protocol needed.
+        fun preset(name: String, mode: String, fps: Int, note: String) {
+            ui.addButton(panel, name) {
+                connection?.sendCommand(JSONObject().put("cmd", "setMode").put("mode", mode))
+                connection?.sendCommand(JSONObject().put("cmd", "setFps").put("fps", fps))
+                android.widget.Toast.makeText(this, note, android.widget.Toast.LENGTH_SHORT).show()
+            }.isEnabled = connected
+        }
+        preset("Презентация · зеркало 60", "mirror", 60, "Зеркало, 60 fps — плавно и ярко для показа")
+        preset("Чтение · расширение 120", "extend", 120, "Расширение, 120 fps — минимум задержки не нужен, нужна плавность")
+        preset("Экономно · расширение 30", "extend", 30, "Расширение, 30 fps — экономия батареи планшета и Mac")
+        if (!connected) ui.label(panel, "Пресеты доступны после подключения.", 13f, ui.muted)
         ui.label(panel, "ЗВУК НА ПЛАНШЕТЕ", 12f, ui.accent, true)
         panel.addView(Switch(this).apply {
             text = "Воспроизводить звук"; setTextColor(ui.ink); isChecked = audioEnabled

@@ -245,6 +245,7 @@ final class HostApp {
 
     func run() {
         HostLog.shared.write("host starting mode=\(settings.mode.rawValue) requestedFps=\(settings.fps)")
+        armMirrorTrigger()
         // Detect an old CLI host before asking for permissions or creating a display.
         wireServer()
         do {
@@ -308,6 +309,9 @@ final class HostApp {
         arrangement.detach()
         pipeline?.reset()
         pipeline = nil
+        // Give the sample-handler queues a beat to drain the last frames
+        // (each still holds an IOSurface of the display about to be freed).
+        Thread.sleep(forTimeInterval: 0.3)
         if virtualCreated {
             vd_release_display()
             virtualCreated = false
@@ -362,6 +366,26 @@ final class HostApp {
         if server.hasClient {
             startPipelineAndAck()
         }
+    }
+
+    /// DEBUG ONLY (crash reproduction, 2026-11-08): when DS_MIRROR_TRIGGER=1,
+    /// touching /tmp/ds-trigger-mirror applies the mirror mode from the main
+    /// queue — the exact path a 0x00 setMode command takes. Never set in
+    /// production; the file trigger replaces the tablet-side preset tap.
+    private func armMirrorTrigger() {
+        guard ProcessInfo.processInfo.environment["DS_MIRROR_TRIGGER"] != nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard FileManager.default.fileExists(atPath: "/tmp/ds-trigger-mirror") else { return }
+            let wanted = (try? String(contentsOfFile: "/tmp/ds-trigger-mirror", encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "mirror"
+            let mode = wanted == "extend" ? "extend" : "mirror"
+            try? FileManager.default.removeItem(atPath: "/tmp/ds-trigger-mirror")
+            DispatchQueue.main.async {
+                HostLog.shared.write("mirror trigger fired (debug) -> \(mode)")
+                self?.handleCommand("setMode", ["mode": mode])
+            }
+        }
+        RunLoop.main.add(timer, forMode: .default)
     }
 
 
