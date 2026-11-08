@@ -57,7 +57,15 @@ jobs:
         run: rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts || true
 
       - name: Build DualScreenHost
-        run: swift build -c release --package-path host
+        run: |
+          for attempt in 1 2 3; do
+            if swift build -c release --package-path host; then exit 0; fi
+            echo "attempt $attempt failed; cleaning SPM caches and retrying"
+            rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts || true
+            rm -rf ~/Library/Caches/org.swift.swiftpm/downloads || true
+            sleep 10
+          done
+          exit 1
 
       - name: Test bundled application lifecycle
         run: |
