@@ -53,6 +53,9 @@ jobs:
       - name: Test codec negotiation and AVC/HEVC hardware round trips
         run: bash scripts/test-host-codec.sh
 
+      - name: Clear stale SPM artifact cache
+        run: rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts || true
+
       - name: Build DualScreenHost
         run: swift build -c release --package-path host
 
