@@ -13,7 +13,18 @@
 
 ### Interface languages
 
-The source and development builds include **English and Russian in one app** on each platform. By default each device follows its own system language preferences, with English as the fallback. On Android, **Settings → App language** offers **System / Русский / English**; changing it stops the current connection, so reconnect afterward. The Mac host follows macOS system/per-app language preferences. Released v1.6.1 binaries predate this localization; a bilingual release is being prepared.
+Starting with **v1.7.0**, both platforms include **English and Russian in one app**. By default each device follows its own system language preferences, with English as the fallback. On Android, **Settings → App language** offers **System / Русский / English**; changing it stops the current connection, so reconnect afterward. The Mac host follows macOS system/per-app language preferences.
+
+<details>
+<summary><strong>English and Russian interface screenshots</strong></summary>
+
+| English | Русский |
+|---|---|
+| ![English home screen](docs/screenshots/home-en.jpg) | ![Russian home screen](docs/screenshots/home-ru.jpg) |
+| ![English settings](docs/screenshots/settings-en.jpg) | ![Russian settings](docs/screenshots/settings-ru.jpg) |
+
+Actual tablet captures from an isolated UI test build; no connection or microphone recording was started for these screenshots.
+</details>
 
 [Features](#features) · [Installation](#installation) · [USB / Wi-Fi](#connection) · [Input](#input) · [Audio / microphone](#audio) · [Clipboard](#clipboard) · [Performance](#performance) · [Troubleshooting](#troubleshooting) · [Contributing](CONTRIBUTING.md)
 
