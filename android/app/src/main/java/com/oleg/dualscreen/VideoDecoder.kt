@@ -5,6 +5,7 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.view.Choreographer
 import android.view.Surface
 
 /**
@@ -17,6 +18,11 @@ import android.view.Surface
  * [feed] never blocks the caller — if no input buffer is instantly free the
  * access unit goes into a small [AccessUnitQueue] that drops the oldest
  * non-keyframe on overflow, so the network reader thread never stalls.
+ *
+ * Presentation is vsync-gated: decoded output is held for the next Choreographer
+ * tick and only the newest frame is released per tick (older ones go back to the
+ * codec unrendered). Submitting at arbitrary times made SurfaceFlinger present
+ * frames 2-3 vsyncs late; gating on vsync keeps the BufferQueue at 0-1 buffers.
  */
 class VideoDecoder(
     private val surface: Surface,
@@ -27,7 +33,9 @@ class VideoDecoder(
     /** Host-vs-client clock offset in ns, re-read at every render. */
     private val clockOffsetNs: () -> Long = { 0L },
     val videoCodec: VideoCodec = VideoCodec.HEVC,
-    private val decoderSupport: DecoderSupport = DecoderSupport.system()
+    private val decoderSupport: DecoderSupport = DecoderSupport.system(),
+    /** True: release output on the Choreographer tick (default). False: ASAP. */
+    private val vsyncRender: Boolean = true
 ) {
 
     companion object {
@@ -37,6 +45,7 @@ class VideoDecoder(
 
     private var codec: MediaCodec? = null
     private var callbackThread: HandlerThread? = null
+    private var callbackHandler: Handler? = null
     @Volatile private var running = false
     @Volatile var started = false
         private set
@@ -53,6 +62,50 @@ class VideoDecoder(
     @Volatile var latencyMs = 0.0
     var lastError: String? = null
         private set
+
+    // Vsync scheduling: sample the vsync phase from Choreographer, then hand
+    // each decoded frame to SurfaceFlinger with a timestamp landing on the
+    // next vsync. Releasing at arbitrary times made frames present 2-3 vsyncs
+    // late; a timestamp makes it deterministic, and SurfaceFlinger itself
+    // keeps only the newest frame when several target the same vsync.
+    private var choreographer: Choreographer? = null
+    @Volatile private var lastVsyncNs = 0L
+
+    private val vsyncPhaseSampler = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            lastVsyncNs = frameTimeNanos
+            choreographer?.postFrameCallback(this)
+        }
+    }
+
+    /** Nanotime of the next vsync, or now when the phase is unknown yet. */
+    private fun nextVsyncNs(): Long {
+        val phase = lastVsyncNs
+        val now = System.nanoTime()
+        if (phase == 0L) return now
+        val interval = 8_333_334L // 120 Hz; timestamp is advisory, small error only skews phase
+        val elapsed = now - phase
+        val ticks = elapsed / interval + 1
+        return phase + ticks * interval
+    }
+
+    /** Releases the buffer to the surface and accounts for it as presented. */
+    private fun present(c: MediaCodec, index: Int, renderAtNs: Long = 0L) {
+        runCatching {
+            if (renderAtNs > 0L) c.releaseOutputBuffer(index, renderAtNs)
+            else c.releaseOutputBuffer(index, true)
+        }
+        renderTiming?.onRendered(
+            android.os.SystemClock.uptimeMillis() * 1_000_000L, clockOffsetNs())
+        frameCount++
+        val now = System.currentTimeMillis()
+        val dt = now - windowStart
+        if (dt >= 1000) {
+            fps = frameCount * 1000.0 / dt
+            frameCount = 0
+            windowStart = now
+        }
+    }
 
     /** Starts the codec from a keyframe access unit. Returns true on success. */
     fun startFromKeyframe(keyAu: ByteArray): Boolean {
@@ -74,7 +127,17 @@ class VideoDecoder(
             codec = c // own the codec before configure/start, including failure paths
             val thread = HandlerThread("dsxp-codec").apply { start() }
             callbackThread = thread
-            c.setCallback(callback, Handler(thread.looper))
+            val handler = Handler(thread.looper)
+            callbackHandler = handler
+            if (vsyncRender) {
+                // Choreographer must be created on a Looper thread; the phase
+                // sampler then ticks on this same thread forever.
+                runCatching { handler.post {
+                    choreographer = Choreographer.getInstance()
+                    choreographer?.postFrameCallback(vsyncPhaseSampler)
+                } }
+            }
+            c.setCallback(callback, handler)
             c.configure(format, surface, null, 0)
             c.start()
             running = true
@@ -160,16 +223,12 @@ class VideoDecoder(
                 if (lat in 0.0..500.0) { // sanity clamp
                     latencyMs = latencyMs * 0.8 + lat * 0.2
                 }
-                c.releaseOutputBuffer(index, true)
-                renderTiming?.onRendered(
-                    android.os.SystemClock.uptimeMillis() * 1_000_000L, clockOffsetNs())
-                frameCount++
-                val now = System.currentTimeMillis()
-                val dt = now - windowStart
-                if (dt >= 1000) {
-                    fps = frameCount * 1000.0 / dt
-                    frameCount = 0
-                    windowStart = now
+                if (vsyncRender) {
+                    // Schedule presentation on the next vsync; SurfaceFlinger
+                    // keeps only the newest frame when several land on one tick.
+                    present(c, index, nextVsyncNs())
+                } else {
+                    present(c, index)
                 }
             } catch (_: Exception) {
                 // Codec already stopped/released between callback and use.
@@ -187,6 +246,7 @@ class VideoDecoder(
     fun stop() {
         running = false
         started = false
+        choreographer?.removeFrameCallback(vsyncPhaseSampler)
         synchronized(lock) { pending.clear(); freeInputs.clear() }
         val c = codec
         codec = null
@@ -194,5 +254,7 @@ class VideoDecoder(
         runCatching { c?.release() }
         callbackThread?.quitSafely()
         callbackThread = null
+        callbackHandler = null
+        choreographer = null
     }
 }

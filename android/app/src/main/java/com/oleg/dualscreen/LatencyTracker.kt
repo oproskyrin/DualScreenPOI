@@ -71,6 +71,15 @@ class RenderTiming(private val capacity: Int = 256, private val history: Int = 3
         }
     }
 
+    /**
+     * Called when an output buffer is discarded without rendering (latest-wins
+     * vsync gating): pops the FIFO entry so push/render pairing stays intact,
+     * but never feeds the latency statistics with a frame nobody saw.
+     */
+    @Synchronized fun onDropped() {
+        fifo.removeFirstOrNull()
+    }
+
     @Synchronized fun pendingCount(): Int = fifo.size
     @Synchronized fun clear() {
         fifo.clear(); capHistory.clear(); encHistory.clear()

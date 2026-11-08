@@ -77,6 +77,17 @@ class LatencyTrackerTest {
         assertEquals(0L, r.matchedFrames)
     }
 
+    @Test fun `dropped output pops the FIFO without polluting stats`() {
+        val r = RenderTiming()
+        r.push(10_000_000, 10_000_000, 0) // will be dropped (never rendered)
+        r.push(20_000_000, 20_000_000, 0) // will be rendered next
+        r.onDropped()
+        r.onRendered(nowNs = 30_000_000, clockOffsetNs = 0)
+        assertEquals(10.0, r.lastCapToRenderMs(), 1e-9) // 30-20, pairing intact
+        assertEquals(1L, r.matchedFrames) // drop is not counted as a render
+        r.onDropped() // FIFO already empty: no-op
+    }
+
     @Test fun `insane values update last but never pollute the average`() {
         val r = RenderTiming()
         r.push(10_000_000, 10_000_000, 0)
