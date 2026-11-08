@@ -6,7 +6,7 @@ trap 'rm -rf "$WORK"' EXIT
 SOURCE="$ROOT/host/Sources/DualScreenHost"
 xcrun swiftc "$SOURCE/AppRuntimePolicy.swift" "$ROOT/host/Tests/AppRuntimeTests.swift" -o "$WORK/policy"
 "$WORK/policy"
-xcrun swiftc "$SOURCE/HostLog.swift" "$SOURCE/FrameServer.swift" "$ROOT/host/Tests/ServerLifecycleTests.swift" -o "$WORK/server"
+xcrun swiftc "$SOURCE/HostLog.swift" "$SOURCE/ClipboardSync.swift" "$SOURCE/FrameServer.swift" "$ROOT/host/Tests/ServerLifecycleTests.swift" -o "$WORK/server"
 "$WORK/server"
 FRAMEWORK_DIR="$ROOT/host/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"
 if [[ ! -d "$FRAMEWORK_DIR/Sparkle.framework" ]]; then
