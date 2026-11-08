@@ -60,3 +60,16 @@ variant, packaging, tests); Android side pending.
 
 Recording only happens when the user explicitly enables the toggle (runtime
 permission first). No audio bytes in logs.
+
+## Live status (2026-11-08, v1.6.0)
+
+End-to-end verified on TB371FC over USB: a 440 Hz tone played on the Mac
+(routes through the tablet output HAL to the speakers) was picked up by the
+tablet microphone, streamed as 0x07 (receivedBytes ~234 KB for 5 s), written
+into the DualScreenMic ring, and captured on the Mac via AVFoundation
+(RMS −30.6 dB against a −inf silent baseline). Mic device appears as
+"Xiaoxin Pad Pro 12.7" (UID DualScreenMic_UID) alongside the output HAL.
+
+Deployment notes: the mic HAL pkg (dist/DualScreenMic/DualScreenMic-*.pkg)
+installs with admin rights and restarts coreaudiod; the host sink re-scans
+for the UID per callback, so no host restart is needed after installation.
