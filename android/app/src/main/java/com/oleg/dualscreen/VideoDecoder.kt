@@ -65,6 +65,9 @@ class VideoDecoder(
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
             runCatching { format.setInteger("vendor.low-latency.enable", 1) }
+            // Qualcomm c2 decoders expose low latency as a vendor extension;
+            // unknown vendor keys are ignored by codecs that lack them.
+            runCatching { format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1) }
             val name = decoderSupport.decoderName(videoCodec, width, height)
                 ?: error("${videoCodec.label} decoder unavailable for $width × $height")
             val c = MediaCodec.createByCodecName(name)

@@ -131,7 +131,14 @@ void *vtenc_create_codec(uint32_t width, uint32_t height,
     CMVideoCodecType codecType = codec == VTENC_CODEC_H264 ? kCMVideoCodecType_H264 : kCMVideoCodecType_HEVC;
 
     OSStatus err;
-    if (getenv("DS_LOWLAT") != NULL) {
+    // Default to Apple's real-time encoder (hevc.rtvc / rtvc AVC on this OS):
+    // measured on TB371FC (USB, 2944x1840) it halves capture->render versus
+    // the media-engine encoder (ave.hevc), because ave buffers frames even
+    // with MaxFrameDelayCount=0. Set DS_LOWLAT=0 to force the classic path.
+    bool lowlat = true;
+    const char *lowlatEnv = getenv("DS_LOWLAT");
+    if (lowlatEnv != NULL && strcmp(lowlatEnv, "0") == 0) lowlat = false;
+    if (lowlat) {
         // Low-latency rate control is an encoder *specification* at creation.
         const void *keys[1] = { kVTVideoEncoderSpecification_EnableLowLatencyRateControl };
         const void *vals[1] = { kCFBooleanTrue };
@@ -155,9 +162,9 @@ void *vtenc_create_codec(uint32_t width, uint32_t height,
     }
 
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
-    // A/B (DS_LOWLAT=1): Apple's low-latency rate control shapes the VBV for
-    // streaming instead of file encoding; measured via the 0x05 timing sidecar.
-    if (getenv("DS_LOWLAT") != NULL) {
+    // Real-time encoder (rtvc) path: shape the VBV for streaming instead of
+    // file encoding; measured via the 0x05 timing sidecar.
+    if (lowlat) {
         VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue);
     }
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
