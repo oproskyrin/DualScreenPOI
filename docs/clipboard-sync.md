@@ -44,10 +44,14 @@ one outgoing frame per 300 ms; latest clip wins.
 
 - Mac: poll `NSPasteboard.general.changeCount` every 700 ms on a utility
   queue. Reading strings: prefer `string(forType: .string)`; ignore empty.
-- Android: `ClipboardManager.OnPrimaryClipChangedListener`. The app holds
-  foreground focus while streaming, which is required by the Android 10+
-  clipboard read restriction. Applying incoming clips (`setPrimaryClip`) is
-  always allowed.
+- Android: `ClipboardManager.OnPrimaryClipChangedListener`, gated on streaming
+  and the clipboard toggle. Android 10+ restricts clipboard reads to a focused
+  app; streaming alone does not prove focus. Incoming text is applied through
+  `setPrimaryClip` (failures are caught and logged without content).
+- The client does **not** explicitly re-read the clipboard in `onResume` or
+  `onWindowFocusChanged`. Returning after copying in another app is therefore
+  not a guaranteed catch-up sync. Do not promise a background tablet → Mac
+  copy-switch-paste workflow.
 
 ## Privacy
 
@@ -67,8 +71,8 @@ clipboard preview bubble); a fake client's 0x06 lands in the Mac pasteboard;
 incoming clips produce no echo in either direction.
 
 Tablet → Mac: the listener is gated on a live session, and Android 10+ only
-lets the focused app read the clipboard. While the stream is fullscreen the
-user cannot copy from other apps without losing focus, so this direction is
-effectively available once the panel grows a text surface (e.g. scratch notes)
-or the client ships as a freeform window. The outgoing path itself is unit
-tested end to end (listener → core → executor send).
+lets the focused app read the clipboard. Copying from another app loses that
+focus. A readable change while DualScreen has focus is needed; returning to
+the client does not explicitly trigger a re-read. The protocol/send path and
+core tests are not proof of a seamless real-device cross-app clipboard flow.
+The fake-client Mac pasteboard check above is not an Android focus test.

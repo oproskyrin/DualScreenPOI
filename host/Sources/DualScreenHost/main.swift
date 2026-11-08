@@ -251,10 +251,10 @@ final class HostApp {
         do {
             try server.start(port: settings.port)
         } catch {
-            let message = "Не удалось открыть порт \(settings.port). Возможно, уже работает другой DualScreenHost (в том числе старая CLI-версия). Завершите его и откройте DualScreen снова.\n\(error)"
+            let message = L10n.format("error.port.body", Int(settings.port), String(describing: error))
             FileHandle.standardError.write(Data((message + "\n").utf8))
             if Bundle.main.bundleURL.pathExtension == "app" {
-                let alert = NSAlert(); alert.messageText = "DualScreen уже запущен или порт занят"
+                let alert = NSAlert(); alert.messageText = L10n.text("error.port.title")
                 alert.informativeText = message; alert.runModal()
             }
             prepareForTermination()
@@ -772,57 +772,60 @@ final class MenuBar: NSObject, NSMenuDelegate {
         statusLine.isEnabled = false
         menu.addItem(statusLine)
         menu.addItem(.separator())
-        let about = NSMenuItem(title: "О программе", action: #selector(showAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: L10n.text("menu.about"), action: #selector(showAbout), keyEquivalent: "")
         about.target = self; menu.addItem(about)
-        let updates = NSMenuItem(title: "Проверить обновления…", action: nil, keyEquivalent: "")
+        let updates = NSMenuItem(title: L10n.text("menu.updates"), action: nil, keyEquivalent: "")
         updates.isEnabled = false
         host.updater?.attach(to: updates)
         menu.addItem(updates)
-        let logs = NSMenuItem(title: "Открыть журнал", action: #selector(openLog), keyEquivalent: "")
+        let logs = NSMenuItem(title: L10n.text("menu.logs"), action: #selector(openLog), keyEquivalent: "")
         logs.target = self; menu.addItem(logs)
         menu.addItem(.separator())
 
-        let modeMenu = NSMenu(title: "Режим")
-        for (label, mode) in [("Расширение (второй экран)", HostApp.Mode.extend),
-                              ("Зеркало (повтор экрана retina)", HostApp.Mode.mirror)] {
+        let modeMenu = NSMenu(title: L10n.text("menu.mode"))
+        for (label, mode) in [(L10n.text("mode.extend"), HostApp.Mode.extend),
+                              (L10n.text("mode.mirror"), HostApp.Mode.mirror)] {
             let item = NSMenuItem(title: label, action: #selector(modeSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = mode.rawValue
             modeMenu.addItem(item)
         }
-        let modeItem = NSMenuItem(title: "Режим", action: nil, keyEquivalent: "")
+        let modeItem = NSMenuItem(title: L10n.text("menu.mode"), action: nil, keyEquivalent: "")
+        modeItem.identifier = NSUserInterfaceItemIdentifier("mode")
         modeItem.submenu = modeMenu
         menu.addItem(modeItem)
 
-        let logicalMenu = NSMenu(title: "Размер (extend)")
-        for (w, h, label) in [(1472, 920, "  Retina ⭐"), (1920, 1200, " мелко-резко"), (2944, 1840, " 1:1 очень мелко")] {
+        let logicalMenu = NSMenu(title: L10n.text("menu.size"))
+        for (w, h, label) in [(1472, 920, L10n.text("size.retina")), (1920, 1200, L10n.text("size.sharp")), (2944, 1840, L10n.text("size.native"))] {
             let item = NSMenuItem(title: "\(w)×\(h)\(label)", action: #selector(logicalSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = "\(w)x\(h)"
             logicalMenu.addItem(item)
         }
-        let logicalItem = NSMenuItem(title: "Размер (extend)", action: nil, keyEquivalent: "")
+        let logicalItem = NSMenuItem(title: L10n.text("menu.size"), action: nil, keyEquivalent: "")
+        logicalItem.identifier = NSUserInterfaceItemIdentifier("size")
         logicalItem.submenu = logicalMenu
         menu.addItem(logicalItem)
 
-        let fpsMenu = NSMenu(title: "Кадры/с")
+        let fpsMenu = NSMenu(title: L10n.text("menu.fps"))
         for f in [120, 90, 60] {
-            let item = NSMenuItem(title: "\(f) fps", action: #selector(fpsSelected(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: L10n.format("value.fps", f), action: #selector(fpsSelected(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = f
             fpsMenu.addItem(item)
         }
-        let fpsItem = NSMenuItem(title: "Кадры/с", action: nil, keyEquivalent: "")
+        let fpsItem = NSMenuItem(title: L10n.text("menu.fps"), action: nil, keyEquivalent: "")
+        fpsItem.identifier = NSUserInterfaceItemIdentifier("fps")
         fpsItem.submenu = fpsMenu
         menu.addItem(fpsItem)
 
-        let autostart = NSMenuItem(title: "Автостарт при входе", action: #selector(toggleAutostart(_:)), keyEquivalent: "")
+        let autostart = NSMenuItem(title: L10n.text("menu.autostart"), action: #selector(toggleAutostart(_:)), keyEquivalent: "")
         autostart.target = self
         autostart.state = LaunchAgent.isInstalled ? .on : .off
         menu.addItem(autostart)
 
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Выйти", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L10n.text("menu.quit"), action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -839,10 +842,11 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     private func refreshStatus() {
         if host.server.hasClient {
-            statusLine.title = String(format: "онлайн • %@ • %.0f fps", host.settings.mode.rawValue, host.pipeline?.currentFps ?? 0)
+            let mode = L10n.text(host.settings.mode == .extend ? "mode.extend.short" : "mode.mirror.short")
+            statusLine.title = L10n.format("status.online", mode, host.pipeline?.currentFps ?? 0)
             statusItem.button?.title = "🖥●"
         } else {
-            statusLine.title = "ожидание планшета (автостарт: \(LaunchAgent.isInstalled ? "вкл" : "выкл"))"
+            statusLine.title = L10n.format("status.waiting", L10n.text(LaunchAgent.isInstalled ? "value.on" : "value.off"))
             statusItem.button?.title = "🖥"
         }
     }
@@ -873,7 +877,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
             if LaunchAgent.isInstalled { try LaunchAgent.uninstall() }
             else { try LaunchAgent.install() }
         } catch {
-            let alert = NSAlert(); alert.messageText = "Не удалось изменить автостарт"
+            let alert = NSAlert(); alert.messageText = L10n.text("error.autostart.change")
             alert.informativeText = error.localizedDescription; alert.runModal()
         }
         sender.state = LaunchAgent.isInstalled ? .on : .off
@@ -881,12 +885,12 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     @objc private func showAbout() {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "CLI (без app bundle)"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? L10n.text("about.cli")
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "DualScreen", .applicationVersion: version, .version: build,
-            .credits: NSAttributedString(string: "Планшет как второй экран Mac\nЖурнал: ~/Library/Logs/DualScreen/host.log")
+            .credits: NSAttributedString(string: L10n.text("about.credits"))
         ])
     }
 
@@ -908,12 +912,12 @@ extension MenuBar {
         for item in menu.items {
             guard let sub = item.submenu else { continue }
             for subItem in sub.items {
-                switch item.title {
-                case "Режим":
+                switch item.identifier?.rawValue {
+                case "mode":
                     subItem.state = (subItem.representedObject as? String) == host.settings.mode.rawValue ? .on : .off
-                case "Размер (extend)":
+                case "size":
                     subItem.state = (subItem.representedObject as? String) == "\(host.settings.logicalW)x\(host.settings.logicalH)" ? .on : .off
-                case "Кадры/с":
+                case "fps":
                     subItem.state = (subItem.representedObject as? Int) == host.settings.fps ? .on : .off
                 default:
                     break
@@ -1006,8 +1010,8 @@ let hostApp = HostApp(settings: settings)
 let lifecycle = AppLifecycle(isStreaming: { hostApp.server.hasClient }, prepare: { hostApp.prepareForTermination() })
 application.delegate = lifecycle
 if let error = autostartMigrationError {
-    let alert = NSAlert(); alert.messageText = "Требуется исправить автостарт"
-    alert.informativeText = error.localizedDescription + "\nПроверка обновлений отключена, пока старый самоперезапускающийся LaunchAgent не будет отключён."
+    let alert = NSAlert(); alert.messageText = L10n.text("error.autostart.repair")
+    alert.informativeText = error.localizedDescription + "\n" + L10n.text("error.autostart.updates")
     if Bundle.main.bundleURL.pathExtension == "app" { alert.runModal() }
 } else {
     hostApp.updater = lifecycle.initializeUpdater()

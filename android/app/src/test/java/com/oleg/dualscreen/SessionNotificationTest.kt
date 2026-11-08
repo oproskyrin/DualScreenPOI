@@ -4,8 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SessionNotificationTest {
+    private val ru = ResourceTestStrings("values-ru")
+    private val en = ResourceTestStrings("values")
     @Test fun quietUpdatesAreDistinctAndThrottledButPhaseChangesAreImmediate() {
-        val gate = SessionNotificationUpdates()
+        val gate = SessionNotificationUpdates(ru)
         val status = SessionNotificationStatus(Endpoint.USB, false, SessionPhase.CONNECTED, decoderFps = 60.0)
         assertTrue(gate.shouldPost(status, 0))
         assertFalse(gate.shouldPost(status, 5000))
@@ -19,13 +21,37 @@ class SessionNotificationTest {
     @Test fun reconnectDoesNotPresentOldConfigOrSampleAsCurrent() {
         val status = SessionNotificationStatus(Endpoint("mac.local", 7381), true, SessionPhase.RECONNECTING,
             mirror = true, configuredFps = 120, decoderFps = 90.0)
-        assertEquals("DualScreen · Wi-Fi · Восстанавливаем связь…", status.title)
-        assertFalse(status.detail.contains("fps"))
-        assertTrue(status.detail.contains("mac.local:7381"))
+        assertEquals("DualScreen · Wi-Fi · Восстанавливаем связь…", status.title(ru))
+        assertFalse(status.detail(ru).contains("fps"))
+        assertTrue(status.detail(ru).contains("mac.local:7381"))
         val connected = status.copy(phase = SessionPhase.CONNECTED, configuredFps = null, decoderFps = Double.NaN)
-        assertTrue(connected.detail.contains("Зеркало"))
-        assertTrue(connected.detail.contains("На Mac задано: — fps"))
-        assertTrue(connected.detail.contains("Декодер: — fps"))
+        assertTrue(connected.detail(ru).contains("Зеркало"))
+        assertTrue(connected.detail(ru).contains("На Mac задано: — fps"))
+        assertTrue(connected.detail(ru).contains("Декодер: — fps"))
+    }
+
+    @Test fun aLanguageChangeRefreshesNotificationTextEvenWhenSessionFactsAreIdentical() {
+        var language: UiStrings = en
+        val gate = SessionNotificationUpdates(UiStrings { id, args -> language.get(id, *args) })
+        val status = SessionNotificationStatus(Endpoint.USB, false, SessionPhase.CONNECTED)
+        assertTrue(gate.shouldPost(status, 0))
+        language = ru
+        assertTrue(gate.shouldPost(status, 100))
+        assertFalse(gate.shouldPost(status, 5000))
+    }
+
+    @Test fun englishNotificationUsesSameSessionFactsWithoutStaleReconnectMetrics() {
+        val status = SessionNotificationStatus(Endpoint.USB, false, SessionPhase.CONNECTED,
+            mirror = false, configuredFps = 120, decoderFps = 58.6)
+        assertEquals("DualScreen · USB · Connected", status.title(en))
+        assertEquals("Mac · 127.0.0.1:7381 (USB tunnel)\nExtend · Mac configured: 120 fps\nDecoder: 59 fps (last sample)", status.detail(en))
+        for (strings in listOf(en, ru)) {
+            val reconnect = status.copy(phase = SessionPhase.RECONNECTING)
+            assertFalse(reconnect.detail(strings).contains("fps"))
+            assertTrue(reconnect.detail(strings).contains("127.0.0.1:7381"))
+            val missing = status.copy(mirror = null, configuredFps = -1, decoderFps = Double.POSITIVE_INFINITY)
+            assertTrue(missing.detail(strings).contains("— fps"))
+        }
     }
 
     @Test fun ownerLifecycleCannotResurrectCancelledOrReplaceNewSession() {
@@ -46,7 +72,7 @@ class SessionNotificationTest {
     @Test fun statusDistinguishesTransportEndpointAndMeasuredFromConfiguredRate() {
         val status = SessionNotificationStatus(Endpoint.USB, false, SessionPhase.CONNECTED,
             mirror = false, configuredFps = 120, decoderFps = 58.6)
-        assertEquals("DualScreen · USB · Подключено", status.title)
-        assertEquals("Mac · 127.0.0.1:7381 (USB-туннель)\nРасширение · На Mac задано: 120 fps\nДекодер: 59 fps (последний замер)", status.detail)
+        assertEquals("DualScreen · USB · Подключено", status.title(ru))
+        assertEquals("Mac · 127.0.0.1:7381 (USB-туннель)\nРасширение · На Mac задано: 120 fps\nДекодер: 59 fps (последний замер)", status.detail(ru))
     }
 }

@@ -2,9 +2,7 @@ package com.oleg.dualscreen
 
 import kotlin.math.roundToInt
 
-enum class SessionPhase(val label: String) {
-    CONNECTING("Подключение…"), CONNECTED("Подключено"), RECONNECTING("Восстанавливаем связь…")
-}
+enum class SessionPhase { CONNECTING, CONNECTED, RECONNECTING }
 
 /** Immutable facts about the Activity-owned session, never a request to connect. */
 data class SessionNotificationStatus(
@@ -15,14 +13,20 @@ data class SessionNotificationStatus(
     val configuredFps: Int? = null,
     val decoderFps: Double? = null
 ) {
-    val title: String get() = "DualScreen · ${if (wifi) "Wi-Fi" else "USB"} · ${phase.label}"
-    val detail: String get() {
-        val address = "Mac · ${endpoint.address}${if (wifi) "" else " (USB-туннель)"}"
+    fun title(strings: UiStrings): String = strings.get(R.string.notification_title,
+        if (wifi) "Wi-Fi" else "USB", strings.get(when (phase) {
+            SessionPhase.CONNECTING -> R.string.connecting
+            SessionPhase.CONNECTED -> R.string.phase_connected
+            SessionPhase.RECONNECTING -> R.string.phase_reconnecting
+        }))
+
+    fun detail(strings: UiStrings): String {
+        val address = strings.get(if (wifi) R.string.notification_wifi_address else R.string.notification_usb_address, endpoint.address)
         // During reconnect, the old ack and decoder sample are no longer current.
-        if (phase != SessionPhase.CONNECTED) return "$address\nНажмите, чтобы вернуться в DualScreen"
-        val mode = when (mirror) { true -> "Зеркало"; false -> "Расширение"; null -> "Режим: —" }
+        if (phase != SessionPhase.CONNECTED) return strings.get(R.string.notification_pending, address)
+        val mode = strings.get(when (mirror) { true -> R.string.mode_mirror; false -> R.string.mode_extend; null -> R.string.mode_unknown })
         val configured = configuredFps?.takeIf { it > 0 }?.toString() ?: "—"
         val actual = decoderFps?.takeIf { it.isFinite() && it >= 0 }?.roundToInt()?.toString() ?: "—"
-        return "$address\n$mode · На Mac задано: $configured fps\nДекодер: $actual fps (последний замер)"
+        return strings.get(R.string.notification_detail, address, mode, configured, actual)
     }
 }

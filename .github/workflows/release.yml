@@ -29,6 +29,11 @@ jobs:
           java-version: "17"
 
       # ---- Mac host ----
+      - name: Test English and Russian host catalogs
+        run: |
+          bash scripts/test-host-localization.sh
+          python3 -m unittest discover -s tests -p test_host_localization.py -v
+
       - name: Test audio conversion and routing policy
         run: bash scripts/test-host-audio.sh
 

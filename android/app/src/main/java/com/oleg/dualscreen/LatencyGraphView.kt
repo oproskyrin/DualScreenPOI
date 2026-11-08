@@ -51,6 +51,6 @@ class LatencyGraphView(context: Context) : View(context) {
         }
         val guideY = h - (40.0 * scale).toFloat()
         if (guideY > 0f) canvas.drawLine(0f, guideY, w, guideY, guide)
-        canvas.drawText("${maxMs.toInt()} мс", 8f, 34f, label)
+        canvas.drawText(context.getString(R.string.graph_milliseconds, maxMs.toInt()), 8f, 34f, label)
     }
 }

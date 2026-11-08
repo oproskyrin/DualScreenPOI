@@ -29,6 +29,15 @@ class CodecNegotiationTest {
         assertEquals(2944 to 1840, checked)
     }
 
+    @Test fun rejectionMetadataIsLocaleIndependentAndPreservesHostReason() {
+        try {
+            CodecNegotiation.accept(JSONObject().put("ok", false).put("error", "no common codec"), both) { _, _ -> both }
+            fail("rejected host accepted")
+        } catch (error: CodecNegotiation.Rejected) {
+            assertEquals("Mac rejected connection: no common codec", error.message)
+        }
+    }
+
     @Test fun noAdvertisedDecoderAndInvalidDimensionsAreRejected() {
         for (ack in listOf(JSONObject().put("ok", true).put("codec", "h264"), JSONObject().put("ok", true).put("width", -1))) {
             try { CodecNegotiation.accept(ack, emptySet()) { _, _ -> both }; fail("invalid negotiation accepted") }

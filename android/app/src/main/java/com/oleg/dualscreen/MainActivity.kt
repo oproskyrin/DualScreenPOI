@@ -31,7 +31,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import org.json.JSONObject
-import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -122,12 +121,12 @@ class MainActivity : AppCompatActivity() {
     private val discoveryTimeout = Runnable {
         stopDiscovery()
         if (state == State.DISCOVERING) setState(State.IDLE,
-            if (discovered.isEmpty()) "Mac не найден. Проверьте общую Wi-Fi сеть и запущенный DualScreen на Mac." else "Выберите Mac для подключения")
+            if (discovered.isEmpty()) getString(R.string.discovery_empty) else getString(R.string.discovery_choose))
         renderDiscovered()
     }
     /** "12 мс" or "—" when no sane measurement exists yet. */
     private fun fmtMs(ms: Double): String =
-        if (ms.isFinite() && ms >= 0.0) String.format(Locale.getDefault(), "%.0f мс", ms) else "—"
+        if (ms.isFinite() && ms >= 0.0) getString(R.string.milliseconds, ms) else "—"
 
     /** Short haptic feedback for connection events; safe anywhere, no-op without a vibrator. */
     private fun buzz(pattern: LongArray) {
@@ -150,22 +149,17 @@ class MainActivity : AppCompatActivity() {
             val fps = d?.fps ?: 0.0
             val lat = latency
             if (diagnostics) statusText.text = buildString {
-                append("Кодек: ${negotiatedCodec?.label ?: "—"}\n")
-                append(String.format(Locale.getDefault(),
-                    "Декодер: %.0f мс · %.0f fps\nЗадано на Mac: %d fps · %d Мбит/с · Панель: %.0f Гц",
+                append(getString(R.string.diagnostic_codec, negotiatedCodec?.label ?: "—"))
+                append(getString(R.string.diagnostic_rates,
                     decodeMs, fps, config.optInt("fps", requestedHz), lastHostStats?.optInt("bitrateMbps", 0) ?: 0,
                     panelDisplay.refreshRate))
                 // Capture-to-render needs a synced clock; without it the numbers
                 // would be garbage, so wait for the NTP-lite exchange.
                 if (lat != null && lat.clock.hasOffset) {
-                    append("\nЗахват Mac→экран планшета: ").append(fmtMs(lat.renderTiming.lastCapToRenderMs()))
-                        .append(" (ср ").append(fmtMs(lat.renderTiming.avgCapToRenderMs())).append(")")
-                    append("\nКодирование Mac→экран: ").append(fmtMs(lat.renderTiming.lastEncToRenderMs()))
-                        .append(" (ср ").append(fmtMs(lat.renderTiming.avgEncToRenderMs())).append(")")
-                    append(String.format(Locale.getDefault(), "\nЧасы: сдвиг %+.0f мс · RTT %s",
-                        lat.clock.offsetNs / 1e6, fmtMs(lat.clock.rttMs)))
-                    append("\nВвод планшет→Mac: ").append(fmtMs(lat.input.lastMs()))
-                        .append(" · макс ").append(fmtMs(lat.input.maxMs()))
+                    append(getString(R.string.diagnostic_capture, fmtMs(lat.renderTiming.lastCapToRenderMs()), fmtMs(lat.renderTiming.avgCapToRenderMs())))
+                    append(getString(R.string.diagnostic_encode, fmtMs(lat.renderTiming.lastEncToRenderMs()), fmtMs(lat.renderTiming.avgEncToRenderMs())))
+                    append(getString(R.string.diagnostic_clock, lat.clock.offsetNs / 1e6, fmtMs(lat.clock.rttMs)))
+                    append(getString(R.string.diagnostic_input, fmtMs(lat.input.lastMs()), fmtMs(lat.input.maxMs())))
                 }
                 val synced = lat?.clock?.hasOffset == true
                 latencyGraph.visibility =
@@ -246,7 +240,7 @@ class MainActivity : AppCompatActivity() {
                 positionToolbar()
             }
         }
-        setState(State.IDLE, "Mac + планшет. Больше места для ваших идей.")
+        setState(State.IDLE, getString(R.string.welcome))
         hideSystemUi()
         handleAutoconnect(intent)
     }
@@ -255,39 +249,39 @@ class MainActivity : AppCompatActivity() {
         val page = ui.column(32)
         val heading = ui.row()
         val brand = ui.column()
-        ui.label(brand, "DUALSCREEN  /  ДЛЯ MAC", 13f, ui.accent, true)
-        ui.label(brand, "Ваш Mac. Ещё один экран.", 32f, bold = true)
-        ui.label(brand, "Рабочее пространство без границ — по кабелю или Wi-Fi.", 16f, ui.muted)
+        ui.label(brand, getString(R.string.brand), 13f, ui.accent, true)
+        ui.label(brand, getString(R.string.home_heading), 32f, bold = true)
+        ui.label(brand, getString(R.string.home_subtitle), 16f, ui.muted)
         heading.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        heading.addView(ui.button("Настройки") { showSettings() })
+        heading.addView(ui.button(getString(R.string.settings)) { showSettings() })
         page.addView(heading)
         homeStatus = ui.label(page, "", 15f, ui.accent)
         homeStatus.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         val cards = ui.row().apply { gravity = Gravity.TOP }
         val usb = ui.card()
-        ui.label(usb, "01  /  КАБЕЛЬ", 12f, ui.accent, true)
+        ui.label(usb, getString(R.string.usb_section), 12f, ui.accent, true)
         ui.label(usb, "USB", 30f, bold = true)
-        ui.label(usb, "Стабильное соединение\nБез общей Wi-Fi сети", 17f, ui.muted)
-        ui.addButton(usb, "Подключить по USB", true) { connectTo(Endpoint.USB, false) }
-        ui.addButton(usb, "Как подключить USB") { showUsbHelp() }
-        ui.label(usb, "Нужен USB-туннель от приложения на Mac. Один кабель без настройки ADB недостаточен.", 13f, ui.muted)
+        ui.label(usb, getString(R.string.usb_summary), 17f, ui.muted)
+        ui.addButton(usb, getString(R.string.usb_connect), true) { connectTo(Endpoint.USB, false) }
+        ui.addButton(usb, getString(R.string.usb_help)) { showUsbHelp() }
+        ui.label(usb, getString(R.string.usb_note), 13f, ui.muted)
         val wifi = ui.card()
-        ui.label(wifi, "02  /  БЕЗ ПРОВОДОВ", 12f, ui.accent, true)
+        ui.label(wifi, getString(R.string.wifi_section), 12f, ui.accent, true)
         ui.label(wifi, "Wi-Fi", 30f, bold = true)
-        ui.label(wifi, "Mac и планшет в одной сети.\nВы сами выбираете устройство.", 17f, ui.muted)
-        ui.addButton(wifi, "Найти Mac по Wi-Fi", true) { discoverMac() }
+        ui.label(wifi, getString(R.string.wifi_summary), 17f, ui.muted)
+        ui.addButton(wifi, getString(R.string.wifi_find), true) { discoverMac() }
         val saved = prefs.getString("wifi_addr", null)
             ?: prefs.getString("addr", null)?.takeUnless { it.startsWith("127.") || it.startsWith("localhost") }
         Endpoint.parse(saved ?: "")?.let { endpoint ->
-            ui.addButton(wifi, "Последний Mac · ${endpoint.address}") { connectTo(endpoint, true) }
+            ui.addButton(wifi, getString(R.string.last_mac, endpoint.address)) { connectTo(endpoint, true) }
         }
-        ui.addButton(wifi, "Ввести адрес вручную") { showManualAddress() }
+        ui.addButton(wifi, getString(R.string.manual_address)) { showManualAddress() }
         wifiList = ui.column()
         wifi.addView(wifiList)
         cards.addView(usb, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = ui.dp(10) })
         cards.addView(wifi, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = ui.dp(10) })
         page.addView(cards, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
-        ui.label(page, "HEVC / H.264  ·  Сенсорное управление  ·  До 120 fps по умолчанию", 13f, ui.muted)
+        ui.label(page, getString(R.string.home_features), 13f, ui.muted)
         home = ui.scroll(page)
         home.setBackgroundColor(ui.background)
         root.addView(home, FrameLayout.LayoutParams(-1, -1))
@@ -309,13 +303,13 @@ class MainActivity : AppCompatActivity() {
         statsBoxRef = statsBox
         root.addView(statsBox, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin=ui.dp(16); bottomMargin=ui.dp(16) })
         toolbar = ui.row().apply { background = ui.shape(0xEE14202E.toInt(), 14); setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)) }
-        listOf("Клавиатура" to { toggleKeyboard() }, "Настройки" to { showSettings() },
-            "Отключиться" to { disconnectHome() }, "Скрыть панель" to { setToolbarVisible(false) }).forEach { (label, action) ->
+        listOf(getString(R.string.keyboard) to { toggleKeyboard() }, getString(R.string.settings) to { showSettings() },
+            getString(R.string.disconnect) to { disconnectHome() }, getString(R.string.hide_controls) to { setToolbarVisible(false) }).forEach { (label, action) ->
             toolbar.addView(ui.button(label, action = action), LinearLayout.LayoutParams(-2, -2).apply { marginStart = ui.dp(4) })
         }
         root.addView(toolbar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { topMargin=ui.dp(12); rightMargin=ui.dp(12) })
         toolbarHandle = ui.button("☰") { setToolbarVisible(true) }.apply {
-            contentDescription = "Показать панель управления"
+            contentDescription = getString(R.string.show_controls)
             minWidth = ui.dp(56); minimumWidth = ui.dp(56)
             // Transparent hit target; only the menu glyph is visible at rest.
             background = ui.shape(android.graphics.Color.TRANSPARENT, 16, android.graphics.Color.TRANSPARENT)
@@ -335,11 +329,11 @@ class MainActivity : AppCompatActivity() {
             isClickable = true
         }
         overlay.addView(ProgressBar(this), LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)))
-        overlayText = ui.label(overlay, "Подключение…", 21f, bold = true).apply {
+        overlayText = ui.label(overlay, getString(R.string.connecting), 21f, bold = true).apply {
             gravity = Gravity.CENTER; accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        ui.label(overlay, "Если связь прервалась, мы восстановим её автоматически.", 14f, ui.muted)
-        ui.addButton(overlay, "Отменить подключение") { disconnectHome() }
+        ui.label(overlay, getString(R.string.reconnect_note), 14f, ui.muted)
+        ui.addButton(overlay, getString(R.string.cancel_connection)) { disconnectHome() }
         root.addView(overlay, FrameLayout.LayoutParams(ui.dp(480), -2, Gravity.CENTER))
     }
 
@@ -485,7 +479,7 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putBoolean("user_stopped", false).apply()
         val notification = SessionNotificationStatus(endpoint, wifi, SessionPhase.CONNECTING)
         notificationOwner = SessionNotificationService.sessions.begin(notification)
-        setState(State.CONNECTING, "Подключение · ${if (wifi) endpoint.host else "USB"}")
+        setState(State.CONNECTING, getString(R.string.connecting_to, if (wifi) endpoint.host else "USB"))
         startSessionNotification()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) offerSessionNotifications()
         val size = Point()
@@ -500,7 +494,7 @@ class MainActivity : AppCompatActivity() {
                 synchronized(mediaLock) {
                     if (!session.accepts(token)) return
                     if (!config.optBoolean("ok")) {
-                        handler.post { if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, "Mac отклонил подключение. Проверьте приложение на Mac.") } }
+                        handler.post { if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, getString(R.string.mac_rejected)) } }
                         return
                     }
                     val w = config.optInt("width", 2944); val h = config.optInt("height", 1840)
@@ -548,7 +542,7 @@ class MainActivity : AppCompatActivity() {
                         if (!d.isKeyframe(annexB)) return
                         if (!d.startFromKeyframe(annexB)) {
                             if (d.lastError != null) handler.post {
-                                if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, "Не удалось запустить ${selected.label}-декодер. Попробуйте другой кодек или разрешение.") }
+                                if (session.accepts(token) && callbackEpoch.get() == epoch) { disconnectHome(); setState(State.ERROR, getString(R.string.decoder_failed, selected.label)) }
                             }
                             return
                         }
@@ -559,7 +553,7 @@ class MainActivity : AppCompatActivity() {
             override fun onAudio(pcm: ByteArray) { synchronized(mediaLock) { if (session.accepts(token) && streaming && audioEnabled) audioPlayer.feed(pcm) } }
             override fun onStats(stats: JSONObject) { if (session.accepts(token)) lastHostStats = stats }
             override fun onClipboard(text: String, hash: String) { if (session.accepts(token)) onClipboardIncoming(text, hash) }
-            override fun onRejected(reason: String) {
+            override fun onRejected(error: CodecNegotiation.Rejected) {
                 val epoch = callbackEpoch.incrementAndGet()
                 synchronized(mediaLock) {
                     if (!session.accepts(token)) return
@@ -568,7 +562,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 handler.post {
                     if (session.accepts(token) && callbackEpoch.get() == epoch) {
-                        disconnectHome(); setState(State.ERROR, reason)
+                        disconnectHome(); setState(State.ERROR, error.localized(UiStrings { id, args -> getString(id, *args) }))
                     }
                 }
             }
@@ -588,7 +582,7 @@ class MainActivity : AppCompatActivity() {
                     stopMic()
                     buzz(pattern = longArrayOf(0, 30, 80, 30))
                     handler.removeCallbacks(statsUpdater)
-                    setState(State.RECONNECTING, "Восстанавливаем связь · ${if (wifi) endpoint.host else "USB"}\nПроверьте ${if (wifi) "Wi-Fi и приложение на Mac" else "кабель и USB-туннель на Mac"}")
+                    setState(State.RECONNECTING, getString(R.string.reconnecting_to, if (wifi) endpoint.host else "USB", getString(if (wifi) R.string.check_wifi else R.string.check_usb)))
                 }
             }
         }
@@ -623,7 +617,7 @@ class MainActivity : AppCompatActivity() {
             notificationServiceStarted = true
         } catch (e: RuntimeException) {
             android.util.Log.w("DualScreen", "Cannot start Mac session service", e)
-            Toast.makeText(this, "Android не разрешил фоновое соединение. Оставьте DualScreen открытым.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.background_denied), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -637,7 +631,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun notificationUnavailable() {
-        Toast.makeText(this, "Уведомления выключены: возврат из шторки недоступен. Откройте DualScreen через недавние приложения. Соединение не остановлено.", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, getString(R.string.notifications_disabled), Toast.LENGTH_LONG).show()
     }
 
     private fun offerSessionNotifications(explicit: Boolean = false) {
@@ -647,7 +641,7 @@ class MainActivity : AppCompatActivity() {
         val allowed = NotificationManagerCompat.from(this).areNotificationsEnabled() &&
             channel?.importance != android.app.NotificationManager.IMPORTANCE_NONE
         if (allowed) {
-            if (explicit) Toast.makeText(this, "Уведомление появляется, пока идёт соединение с Mac.", Toast.LENGTH_LONG).show()
+            if (explicit) Toast.makeText(this, getString(R.string.notification_when), Toast.LENGTH_LONG).show()
             return
         }
         val prompted = prefs.getBoolean("notification_prompted", false)
@@ -665,10 +659,10 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putBoolean("notification_prompted", true).apply()
         resetPhysicalInput()
         notificationExplanation = AlertDialog.Builder(this)
-            .setTitle("Возврат к экрану Mac")
-            .setMessage("Разрешите тихое уведомление: в нём видны соединение и частота кадров. Нажатие вернёт DualScreen из шторки без нового подключения. Без разрешения соединение работает, но вернуться можно только через недавние приложения.")
-            .setPositiveButton("Разрешить") { _, _ -> notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
-            .setNegativeButton("Не сейчас") { _, _ -> notificationUnavailable() }
+            .setTitle(getString(R.string.notification_return))
+            .setMessage(getString(R.string.notification_permission))
+            .setPositiveButton(getString(R.string.allow)) { _, _ -> notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+            .setNegativeButton(getString(R.string.not_now)) { _, _ -> notificationUnavailable() }
             .setOnDismissListener { notificationExplanation = null }
             .show()
     }
@@ -688,28 +682,28 @@ class MainActivity : AppCompatActivity() {
         stopDiscovery(); hideKeyboard()
         // Refresh the last-used card after a successful Wi-Fi session.
         root.removeView(home); buildHome(); home.bringToFront()
-        setState(State.IDLE, "Соединение остановлено. Выберите способ подключения.")
+        setState(State.IDLE, getString(R.string.connection_stopped))
     }
 
     private fun showUsbHelp() {
-        AlertDialog.Builder(this).setTitle("Подключение по USB")
-            .setMessage("1. Запустите DualScreen на Mac.\n\n2. Соедините устройства кабелем с передачей данных. На планшете включите режим разработчика и отладку по USB. Разрешите отладку для этого Mac.\n\n3. USB-подключение на Mac должно создать ADB-туннель: adb reverse tcp:7381 tcp:7381. Без него адрес 127.0.0.1 не ведёт к Mac.\n\n4. Нажмите «Подключить по USB». Если связь не установлена, проверьте кабель, разрешение отладки и туннель на Mac.")
-            .setPositiveButton("Понятно", null).show()
+        AlertDialog.Builder(this).setTitle(getString(R.string.usb_title))
+            .setMessage(getString(R.string.usb_instructions))
+            .setPositiveButton(getString(R.string.got_it), null).show()
     }
 
     private fun showManualAddress() {
         val input = EditText(this).apply {
-            hint = "mac.local:7381 или 192.168.1.10:7381"
+            hint = getString(R.string.address_hint)
             setText(prefs.getString("wifi_addr", "")); setSingleLine()
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
             setPadding(ui.dp(24), ui.dp(16), ui.dp(24), ui.dp(16))
-            contentDescription = "Адрес Mac"
+            contentDescription = getString(R.string.mac_address)
         }
-        val dialog = AlertDialog.Builder(this).setTitle("Адрес Mac в Wi-Fi сети").setView(input)
-            .setNegativeButton("Отмена", null).setPositiveButton("Подключить", null).create()
+        val dialog = AlertDialog.Builder(this).setTitle(getString(R.string.wifi_address_title)).setView(input)
+            .setNegativeButton(getString(R.string.cancel), null).setPositiveButton(getString(R.string.connect), null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val endpoint = Endpoint.parse(input.text.toString())
-            if (endpoint == null || endpoint == Endpoint.USB) input.error = "Введите адрес Mac и порт 1–65535. Для кабеля используйте USB."
+            if (endpoint == null || endpoint == Endpoint.USB) input.error = getString(R.string.address_invalid)
             else { dialog.dismiss(); connectTo(endpoint, true) }
         } }
         dialog.show()
@@ -720,12 +714,12 @@ class MainActivity : AppCompatActivity() {
         stopDiscovery()
         discovered.clear(); renderDiscovered()
         val generation = discoveryGeneration
-        setState(State.DISCOVERING, "Ищем Mac в общей сети… Выберите устройство из списка.")
+        setState(State.DISCOVERING, getString(R.string.discovery_searching))
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(type: String) {}
             override fun onDiscoveryStopped(type: String) {}
             override fun onStartDiscoveryFailed(type: String, code: Int) { handler.post {
-                if (generation == discoveryGeneration) { stopDiscovery(); setState(State.ERROR, "Не удалось начать поиск ($code). Можно ввести адрес вручную.") }
+                if (generation == discoveryGeneration) { stopDiscovery(); setState(State.ERROR, getString(R.string.discovery_failed, code)) }
             } }
             override fun onStopDiscoveryFailed(type: String, code: Int) {}
             override fun onServiceFound(info: NsdServiceInfo) { handler.post {
@@ -738,7 +732,7 @@ class MainActivity : AppCompatActivity() {
         discoveryListener = listener
         renderDiscovered()
         runCatching { nsd.discoverServices("_dualscreen._tcp.", NsdManager.PROTOCOL_DNS_SD, listener) }.onFailure {
-            stopDiscovery(); setState(State.ERROR, "Поиск недоступен. Введите адрес Mac вручную.")
+            stopDiscovery(); setState(State.ERROR, getString(R.string.discovery_unavailable))
         }
         handler.postDelayed(discoveryTimeout, 12000)
     }
@@ -767,8 +761,8 @@ class MainActivity : AppCompatActivity() {
         discovered.values.forEach { (name, endpoint) ->
             ui.addButton(wifiList, "$name · ${endpoint.address}") { connectTo(endpoint, true) }
         }
-        if (state == State.DISCOVERING) ui.addButton(wifiList, "Остановить поиск") {
-            stopDiscovery(); setState(State.IDLE, "Поиск остановлен. Выберите Mac или введите адрес."); renderDiscovered()
+        if (state == State.DISCOVERING) ui.addButton(wifiList, getString(R.string.stop_discovery)) {
+            stopDiscovery(); setState(State.IDLE, getString(R.string.discovery_stopped_hint)); renderDiscovered()
         }
     }
 
@@ -783,10 +777,26 @@ class MainActivity : AppCompatActivity() {
         resetPhysicalInput()
         settingsDialog?.dismiss()
         val panel = ui.column(24)
-        ui.label(panel, "ВИДЕОКОДЕК", 12f, ui.accent, true)
-        ui.addButton(panel, "Предпочтение · ${preferredCodec.label}") {
+        ui.addButton(panel, getString(R.string.language_title)) {
+            val tags = arrayOf("", "ru", "en")
+            val current = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags()
+            choose(getString(R.string.language_title), arrayOf(getString(R.string.language_system),
+                getString(R.string.language_russian), getString(R.string.language_english)), tags.indexOf(current)) { index ->
+                if (tags[index] != current) {
+                    // Locale application recreates this Activity. Use the normal cancel path first:
+                    // owner fencing, microphone/input release, and user_stopped block stale intents.
+                    disconnectHome()
+                    settingsDialog?.dismiss()
+                    androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
+                        androidx.core.os.LocaleListCompat.forLanguageTags(tags[index]))
+                }
+            }
+        }
+        ui.label(panel, getString(R.string.language_note), 13f, ui.muted)
+        ui.label(panel, getString(R.string.codec_section), 12f, ui.accent, true)
+        ui.addButton(panel, getString(R.string.codec_preference, preferredCodec.label)) {
             val options = VideoCodec.entries
-            choose("Кодек · смена переподключает сеанс", options.map { it.label }.toTypedArray(), options.indexOf(preferredCodec)) { index ->
+            choose(getString(R.string.codec_title), options.map { it.label }.toTypedArray(), options.indexOf(preferredCodec)) { index ->
                 val selected = options[index]
                 if (selected != preferredCodec) {
                     resetPhysicalInput()
@@ -797,57 +807,57 @@ class MainActivity : AppCompatActivity() {
                             streaming = false; decoder?.stop(); decoder = null; audioPlayer.stop(); negotiatedCodec = null
                         }
                         handler.removeCallbacks(statsUpdater)
-                        setState(State.RECONNECTING, "Согласуем кодек · ${selected.label}")
+                        setState(State.RECONNECTING, getString(R.string.codec_negotiating, selected.label))
                         connection?.requestReconnect()
                     }
                 }
                 showSettings()
             }
         }
-        ui.label(panel, "Согласован: ${negotiatedCodec?.label ?: "—"}. HEVC — по умолчанию. Смена кодека сохраняется и переподключает активный сеанс. Mac может выбрать другой поддерживаемый кодек; старый Mac использует HEVC. Разница задержки требует A/B-проверки.", 13f, ui.muted)
-        ui.addButton(panel, "Уведомление о соединении") { offerSessionNotifications(explicit = true) }
-        ui.addButton(panel, "Журнал соединения") { showConnectionLog() }
+        ui.label(panel, getString(R.string.codec_note, negotiatedCodec?.label ?: "—"), 13f, ui.muted)
+        ui.addButton(panel, getString(R.string.session_notification)) { offerSessionNotifications(explicit = true) }
+        ui.addButton(panel, getString(R.string.connection_log)) { showConnectionLog() }
         panel.addView(Switch(this).apply {
-            text = "Клавиатура и тачпад"; setTextColor(ui.ink); isChecked = physicalInputEnabled; minHeight = ui.dp(48)
-            contentDescription = "Клавиатура и тачпад"
+            text = getString(R.string.physical_input); setTextColor(ui.ink); isChecked = physicalInputEnabled; minHeight = ui.dp(48)
+            contentDescription = getString(R.string.physical_input)
             setOnCheckedChangeListener { _, enabled ->
                 resetPhysicalInput(); physicalInputEnabled = enabled
                 prefs.edit().putBoolean("physical_input", enabled).apply()
             }
         })
-        ui.label(panel, "Физическая клавиатура и мышь управляют Mac над изображением. Meta → Cmd, Alt → Option, Ctrl → Ctrl. Системные клавиши и жесты Android могут остаться на планшете. Курсор Android не захватывается. Журнал не содержит нажатий и введённого текста.", 13f, ui.muted)
+        ui.label(panel, getString(R.string.physical_input_note), 13f, ui.muted)
         val mirror = if (config.has("mirror")) config.optBoolean("mirror") else lastHostStats?.optString("mode") == "mirror"
-        val mode = if (mirror) "Зеркало" else "Расширение"
+        val mode = if (mirror) getString(R.string.mode_mirror) else getString(R.string.mode_extend)
         val connected = streaming
-        ui.label(panel, "ЭКРАН MAC", 12f, ui.accent, true)
-        ui.addButton(panel, "Режим · $mode") {
-            choose("Режим Mac", arrayOf("Расширение", "Зеркало"), if (mode == "Зеркало") 1 else 0) { index ->
+        ui.label(panel, getString(R.string.mac_display_section), 12f, ui.accent, true)
+        ui.addButton(panel, getString(R.string.mode_value, mode)) {
+            choose(getString(R.string.mode_title), arrayOf(getString(R.string.mode_extend), getString(R.string.mode_mirror)), if (mirror) 1 else 0) { index ->
                 connection?.sendCommand(JSONObject().put("cmd", "setMode").put("mode", if (index == 0) "extend" else "mirror"))
             }
         }.isEnabled = connected
         val lw = config.optInt("logicalW", config.optInt("width", 0))
         val lh = config.optInt("logicalH", config.optInt("height", 0))
-        ui.addButton(panel, "Логическое разрешение · ${if (lw > 0) "$lw × $lh" else "по данным Mac"}") {
+        ui.addButton(panel, getString(R.string.logical_value, if (lw > 0) "$lw × $lh" else getString(R.string.logical_from_mac))) {
             val sizes = arrayOf(1472 to 920, 1920 to 1200, 2944 to 1840)
-            choose("Логическое разрешение", arrayOf("1472 × 920 · Retina", "1920 × 1200", "2944 × 1840 · 1:1"), sizes.indexOf(lw to lh)) { index ->
+            choose(getString(R.string.logical_title), arrayOf("1472 × 920 · Retina", "1920 × 1200", "2944 × 1840 · 1:1"), sizes.indexOf(lw to lh)) { index ->
                 connection?.sendCommand(JSONObject().put("cmd", "setLogical").put("w", sizes[index].first).put("h", sizes[index].second))
             }
         }.isEnabled = connected
-        if (!connected) ui.label(panel, "Режим и разрешение доступны после подключения.", 13f, ui.muted)
-        ui.label(panel, "ЧАСТОТА", 12f, ui.accent, true)
-        ui.addButton(panel, "Запрошено · $requestedHz Гц / fps") {
+        if (!connected) ui.label(panel, getString(R.string.mode_requires_connection), 13f, ui.muted)
+        ui.label(panel, getString(R.string.refresh_section), 12f, ui.accent, true)
+        ui.addButton(panel, getString(R.string.refresh_requested, requestedHz)) {
             val current = panelDisplay.mode
             val options = panelDisplay.supportedModes.filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
                 .map { it.refreshRate.roundToInt() }.distinct().sorted().toIntArray()
-            choose("Частота панели и потока", options.map { "$it Гц / fps" }.toTypedArray(), options.indexOf(requestedHz)) { index ->
+            choose(getString(R.string.refresh_title), options.map { getString(R.string.refresh_option, it) }.toTypedArray(), options.indexOf(requestedHz)) { index ->
                 requestedHz = options[index]; prefs.edit().putInt("requested_hz", requestedHz).apply()
                 applyRefreshRate(requestedHz)
                 connection?.sendCommand(JSONObject().put("cmd", "setFps").put("fps", requestedHz))
                 showSettings()
             }
         }
-        ui.label(panel, "Панель сейчас: ${panelDisplay.refreshRate.roundToInt()} Гц. На Mac задано: ${if (connected) config.optInt("fps", 120).toString() else "—"} fps. Декодер фактически: ${if (connected) (decoder?.fps ?: 0.0).roundToInt().toString() else "—"} fps. Android может ограничивать частоту.", 13f, ui.muted)
-        ui.label(panel, "ПРЕСЕТЫ", 12f, ui.accent, true)
+        ui.label(panel, getString(R.string.refresh_note, panelDisplay.refreshRate.roundToInt(), if (connected) config.optInt("fps", 120).toString() else "—", if (connected) (decoder?.fps ?: 0.0).roundToInt().toString() else "—"), 13f, ui.muted)
+        ui.label(panel, getString(R.string.presets_section), 12f, ui.accent, true)
         // Presets = mode + fps combos through the same 0x00 commands the
         // settings rows use; no new protocol needed.
         fun preset(name: String, mode: String, fps: Int, note: String) {
@@ -857,14 +867,14 @@ class MainActivity : AppCompatActivity() {
                 android.widget.Toast.makeText(this, note, android.widget.Toast.LENGTH_SHORT).show()
             }.isEnabled = connected
         }
-        preset("Презентация · зеркало 60", "mirror", 60, "Зеркало, 60 fps — плавно и ярко для показа")
-        preset("Чтение · расширение 120", "extend", 120, "Расширение, 120 fps — минимум задержки не нужен, нужна плавность")
-        preset("Экономно · расширение 30", "extend", 30, "Расширение, 30 fps — экономия батареи планшета и Mac")
-        if (!connected) ui.label(panel, "Пресеты доступны после подключения.", 13f, ui.muted)
-        ui.label(panel, "ЗВУК НА ПЛАНШЕТЕ", 12f, ui.accent, true)
+        preset(getString(R.string.preset_present), "mirror", 60, getString(R.string.preset_present_note))
+        preset(getString(R.string.preset_read), "extend", 120, getString(R.string.preset_read_note))
+        preset(getString(R.string.preset_save), "extend", 30, getString(R.string.preset_save_note))
+        if (!connected) ui.label(panel, getString(R.string.presets_requires_connection), 13f, ui.muted)
+        ui.label(panel, getString(R.string.audio_section), 12f, ui.accent, true)
         panel.addView(Switch(this).apply {
-            text = "Воспроизводить звук"; setTextColor(ui.ink); isChecked = audioEnabled
-            contentDescription = "Воспроизводить звук"; minHeight = ui.dp(48)
+            text = getString(R.string.audio_play); setTextColor(ui.ink); isChecked = audioEnabled
+            contentDescription = getString(R.string.audio_play); minHeight = ui.dp(48)
             setOnCheckedChangeListener { _, enabled ->
                 audioEnabled = enabled; prefs.edit().putBoolean("audio_enabled", enabled).apply()
                 synchronized(mediaLock) {
@@ -873,10 +883,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
-        ui.label(panel, "Источник выбирается на Mac. Этот переключатель только отключает звук на планшете.", 13f, ui.muted)
+        ui.label(panel, getString(R.string.audio_note), 13f, ui.muted)
         val audio = getSystemService(AUDIO_SERVICE) as AudioManager
         panel.addView(SeekBar(this).apply {
-            contentDescription = "Громкость планшета"; max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            contentDescription = getString(R.string.tablet_volume); max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             progress = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) { if (fromUser) audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0) }
@@ -884,40 +894,40 @@ class MainActivity : AppCompatActivity() {
                 override fun onStopTrackingTouch(bar: SeekBar?) {}
             })
         })
-        ui.label(panel, "ДИАГНОСТИКА", 12f, ui.accent, true)
+        ui.label(panel, getString(R.string.diagnostics_section), 12f, ui.accent, true)
         panel.addView(Switch(this).apply {
-            text = "Показывать статистику"; setTextColor(ui.ink); isChecked = diagnostics; minHeight = ui.dp(48)
-            contentDescription = "Показывать статистику"
+            text = getString(R.string.diagnostics_show); setTextColor(ui.ink); isChecked = diagnostics; minHeight = ui.dp(48)
+            contentDescription = getString(R.string.diagnostics_show)
             setOnCheckedChangeListener { _, enabled ->
                 diagnostics = enabled; prefs.edit().putBoolean("diagnostics", enabled).apply()
                 statsBoxRef.visibility = if (enabled && streaming) View.VISIBLE else View.GONE
             }
         })
-        ui.label(panel, "Задержка — от подачи кадра в декодер до его выдачи, не задержка Mac → планшет. Обратная связь для адаптивного битрейта работает всегда.", 13f, ui.muted)
+        ui.label(panel, getString(R.string.diagnostics_note), 13f, ui.muted)
         panel.addView(Switch(this).apply {
-            text = "Локальный курсор"; setTextColor(ui.ink); isChecked = localCursor; minHeight = ui.dp(48)
-            contentDescription = "Локальный курсор"
+            text = getString(R.string.local_cursor); setTextColor(ui.ink); isChecked = localCursor; minHeight = ui.dp(48)
+            contentDescription = getString(R.string.local_cursor)
             setOnCheckedChangeListener { _, enabled ->
                 localCursor = enabled
                 prefs.edit().putBoolean("local_cursor", enabled).apply()
                 cursorOverlay.setCursorEnabled(enabled)
             }
         })
-        ui.label(panel, "Рисует указатель на планшете сразу под пальцем, пока изображение с Mac догоняет. На сам ввод не влияет.", 13f, ui.muted)
-        ui.label(panel, "ОБЩИЙ БУФЕР ОБМЕНА", 12f, ui.accent, true)
+        ui.label(panel, getString(R.string.local_cursor_note), 13f, ui.muted)
+        ui.label(panel, getString(R.string.clipboard_section), 12f, ui.accent, true)
         panel.addView(Switch(this).apply {
-            text = "Общий буфер обмена"; setTextColor(ui.ink); isChecked = clipboardEnabled; minHeight = ui.dp(48)
-            contentDescription = "Общий буфер обмена"
+            text = getString(R.string.clipboard_sync); setTextColor(ui.ink); isChecked = clipboardEnabled; minHeight = ui.dp(48)
+            contentDescription = getString(R.string.clipboard_sync)
             setOnCheckedChangeListener { _, enabled ->
                 clipboardEnabled = enabled
                 prefs.edit().putBoolean("clipboard_sync", enabled).apply()
             }
         })
-        ui.label(panel, "Текстовые фрагменты синхронизируются с Mac в обе стороны, пока идёт соединение. Текст никогда не попадает в журнал: только размер и хеш.", 13f, ui.muted)
-        ui.label(panel, "МИКРОФОН НА MAC", 12f, ui.accent, true)
+        ui.label(panel, getString(R.string.clipboard_note), 13f, ui.muted)
+        ui.label(panel, getString(R.string.mic_section), 12f, ui.accent, true)
         micSwitch = Switch(this).apply {
-            text = "Передавать микрофон"; setTextColor(ui.ink); isChecked = micEnabled; minHeight = ui.dp(48)
-            contentDescription = "Передавать микрофон"
+            text = getString(R.string.mic_send); setTextColor(ui.ink); isChecked = micEnabled; minHeight = ui.dp(48)
+            contentDescription = getString(R.string.mic_send)
             setOnCheckedChangeListener { _, enabled ->
                 when {
                     // Toggle off (or a leftover revert): stop recording now.
@@ -931,14 +941,14 @@ class MainActivity : AppCompatActivity() {
         }
         panel.addView(micSwitch)
         micHint = ui.label(panel, micHintText(), 13f, ui.muted)
-        settingsDialog = AlertDialog.Builder(this).setTitle("Настройки DualScreen").setView(ui.scroll(panel)).setPositiveButton("Готово", null)
+        settingsDialog = AlertDialog.Builder(this).setTitle(getString(R.string.settings_title)).setView(ui.scroll(panel)).setPositiveButton(getString(R.string.done), null)
             .setOnDismissListener { settingsDialog = null; micSwitch = null; micHint = null }
             .show()
     }
 
     private fun choose(title: String, options: Array<String>, current: Int, selected: (Int) -> Unit) {
         AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(options, current) { dialog, index -> selected(index); dialog.dismiss() }
-            .setNegativeButton("Отмена", null).show()
+            .setNegativeButton(getString(R.string.cancel), null).show()
     }
 
     // ------------------------------------------------------------- microphone
@@ -993,8 +1003,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun micHintText() = buildString {
-        append("Микрофон планшета передаётся на Mac как устройство ввода во время соединения. Запись включается только этим переключателем, звук в журнал не пишется.")
-        if (micDenied) append(" Нужно разрешение на микрофон.")
+        append(getString(R.string.mic_note))
+        if (micDenied) append(getString(R.string.mic_permission_needed))
     }
 
     private fun updateMicHint() { micHint?.text = micHintText() }
@@ -1068,14 +1078,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun showConnectionLog() {
         resetPhysicalInput()
-        val text = ui.text("Загрузка…", 12f, ui.ink).apply {
+        val text = ui.text(getString(R.string.loading), 12f, ui.ink).apply {
             setPadding(ui.dp(20), ui.dp(16), ui.dp(20), ui.dp(16))
             setTextIsSelectable(true)
         }
         val scroll = ScrollView(this).apply { addView(text) }
-        val dialog = AlertDialog.Builder(this).setTitle("Журнал соединения").setView(scroll).setPositiveButton("Готово", null).show()
+        val dialog = AlertDialog.Builder(this).setTitle(getString(R.string.connection_log)).setView(scroll).setPositiveButton(getString(R.string.done), null).show()
         clientLog.recent().thenAccept { recent -> handler.post {
-            if (!isFinishing && !isDestroyed && dialog.isShowing) { text.text = recent; scroll.post { scroll.fullScroll(View.FOCUS_DOWN) } }
+            if (!isFinishing && !isDestroyed && dialog.isShowing) { text.text = recent.ifEmpty { getString(R.string.log_empty) }; scroll.post { scroll.fullScroll(View.FOCUS_DOWN) } }
         } }
     }
 
@@ -1130,7 +1140,7 @@ class MainActivity : AppCompatActivity() {
             // matches in onPrimaryClipChanged and is not sent back.
             runCatching { clipboardManager.setPrimaryClip(ClipData.newPlainText("dsxp", text)) }
                 .onFailure { clientLog.event("clipboard apply failed ${it.javaClass.simpleName}") }
-            Toast.makeText(this, "Буфер обмена: ${text.take(24)}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.clipboard_received, text.take(24)), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1179,14 +1189,14 @@ class MainActivity : AppCompatActivity() {
         resetPhysicalInput()
         activityVisible = false
         stopDiscovery()
-        if (state == State.DISCOVERING) { setState(State.IDLE, "Поиск приостановлен. Нажмите «Найти Mac по Wi-Fi»."); renderDiscovered() }
+        if (state == State.DISCOVERING) { setState(State.IDLE, getString(R.string.discovery_paused)); renderDiscovered() }
         super.onStop()
     }
     @Deprecated("Native back handling retained for API 26")
     override fun onBackPressed() {
         if (keyboardVisible) hideKeyboard()
         else if (state in listOf(State.CONNECTING, State.RECONNECTING, State.STREAMING)) disconnectHome()
-        else if (state == State.DISCOVERING) { stopDiscovery(); setState(State.IDLE, "Поиск остановлен"); renderDiscovered() }
+        else if (state == State.DISCOVERING) { stopDiscovery(); setState(State.IDLE, getString(R.string.discovery_stopped)); renderDiscovered() }
         else super.onBackPressed()
     }
     private fun hideSystemUi() {

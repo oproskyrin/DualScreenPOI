@@ -1,0 +1,52 @@
+name: Device compatibility / Совместимость устройства
+description: Share a working, partial or failed test on your exact tablet model.
+title: "[Device] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Successful tests are useful too. English and Russian are welcome. A report describes one setup, not certification of an entire product family. Do not include serial numbers or private desktop screenshots.
+        Полезны и успешные проверки. Пишите по-русски или по-английски; указывайте только то, что действительно проверили.
+  - type: input
+    id: device
+    attributes:
+      label: Exact tablet model / Точная модель планшета
+      description: Manufacturer, product name, model code, Android and vendor OS versions. No serial numbers.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Mac and app versions / Mac и версии приложений
+      description: Mac model/chip, macOS, host and client versions, download source or local commit; full PKG or app-only installation.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall result / Общий результат
+      options:
+        - Working in the features tested / Проверенные функции работают
+        - Partially working / Работает частично
+        - Cannot connect or display video / Нет соединения или видео
+    validations:
+      required: true
+  - type: textarea
+    id: tested
+    attributes:
+      label: What you actually tested / Что действительно проверили
+      description: For each, say works, fails or not tested — USB, Wi-Fi, extend, mirror, text clarity, sound, touch, physical keyboard/trackpad, clipboard directions, microphone, reconnect. Mention Android clipboard focus and mic enable/reconnect where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration and stability / Конфигурация и стабильность
+      description: Resolution, codec, requested FPS, panel refresh if known, test duration, moving/static content, dropouts/thermal issues. Do not treat requested FPS or overlay surface-submission latency as physically measured display performance.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes and safe attachments / Примечания и безопасные вложения
+      description: Permission or installation hurdles, workarounds, redacted logs/screenshots. Leave untested features explicitly marked untested; remove personal/network details.

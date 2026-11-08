@@ -11,8 +11,8 @@ android {
         applicationId = "com.oleg.dualscreen"
         minSdk = 26
         targetSdk = 35
-        versionCode = 27
-        versionName = "1.6.1"
+        versionCode = 28
+        versionName = "1.7.0"
     }
 
     buildTypes {

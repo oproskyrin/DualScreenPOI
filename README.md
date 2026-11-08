@@ -1,375 +1,187 @@
 <div align="center">
-  <img src="assets/branding/dualscreen-icon.png" width="128" height="128" alt="DualScreen: Mac и Android-планшет">
+  <img src="assets/branding/dualscreen-icon.png" width="112" height="112" alt="DualScreen icon">
   <h1>DualScreen</h1>
-  <p><strong>Превратите Android-планшет во второй экран Mac по USB или Wi-Fi.</strong></p>
-  <p>Расширение рабочего стола и зеркало · звук и микрофон · буфер обмена · управление с планшета</p>
-  <p>
-    <a href="https://github.com/oproskyrin/DualScreenPOI/releases/latest"><img src="https://img.shields.io/github/v/release/oproskyrin/DualScreenPOI?label=release&amp;color=7eddd0" alt="Последний опубликованный релиз"></a>
-    <a href="https://github.com/oproskyrin/DualScreenPOI/actions/workflows/release.yml"><img src="https://github.com/oproskyrin/DualScreenPOI/actions/workflows/release.yml/badge.svg" alt="Release workflow"></a>
-    <img src="https://img.shields.io/badge/macOS-13%2B%20%C2%B7%20Apple%20Silicon-182538" alt="macOS 13+, Apple Silicon">
-    <img src="https://img.shields.io/badge/Android-8%2B%20%C2%B7%20HEVC-182538" alt="Android 8+, аппаратный HEVC">
-    <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20core%20%2B%20GPL--3.0%20HAL-182538" alt="MIT: основное приложение; GPL-3.0: HAL-драйвер"></a>
-  </p>
-  <p>
-    <a href="https://github.com/oproskyrin/DualScreenPOI/releases/latest"><strong>Скачать для Mac и Android</strong></a>
-    &nbsp; · &nbsp; <a href="#быстрый-старт">Быстрый старт</a>
-    &nbsp; · &nbsp; <a href="#faq">Вопросы и ответы</a>
-  </p>
-
-  <img src="docs/screenshots/hero.jpg" width="820" alt="Рабочий стол Mac на планшете">
+  <p><strong>Your Android tablet, a second screen for your Mac.</strong></p>
+  <p>Extend or mirror over USB or Wi-Fi · audio · keyboard and touch · text clipboard · tablet microphone</p>
+  <p><strong>English</strong> · <a href="README.ru.md">Русский</a></p>
+  <p><a href="https://github.com/oproskyrin/DualScreenPOI/releases/latest"><strong>Download for Mac + Android</strong></a> · <a href="#quick-start">Quick start</a> · <a href="#feedback">Report your device</a></p>
+  <img src="docs/screenshots/hero.jpg" width="820" alt="Mac desktop streamed to the Android client, with its floating menu button">
+  <p><em>A streamed Mac desktop with the client panel hidden. This is a screen capture, not a photograph of the tablet.</em></p>
 </div>
 
----
+**Public beta.** Tested with an Apple Silicon Mac and **Lenovo Xiaoxin Pad Pro 12.7 (2023), TB371FC**. The declared minimums are **macOS 13+** and **Android 8+**; they are not a tested OS/device compatibility matrix. Other tablets need community testing. Use only on a network whose participants you trust: the streaming protocol has **no pairing, authentication or encryption**.
 
-Перетащите на планшет редактор, документы или окно чата. В режиме расширения macOS видит отдельный дисплей; в режиме зеркала планшет показывает основной экран. Приложения остаются на Mac, Android-клиент принимает изображение и звук и передаёт ввод обратно.
+### Interface languages
 
-**Проверенная связка:** Mac с Apple Silicon и Lenovo **Xiaoxin Pad Pro 12.7 (2023), TB371FC**. Другие Android-устройства пока не проверены: Android 8+ и аппаратный HEVC-декодер — минимальные требования, а не гарантия совместимости.
+The source and development builds include **English and Russian in one app** on each platform. By default each device follows its own system language preferences, with English as the fallback. On Android, **Settings → App language** offers **System / Русский / English**; changing it stops the current connection, so reconnect afterward. The Mac host follows macOS system/per-app language preferences. Released v1.6.1 binaries predate this localization; a bilingual release is being prepared.
 
-<p align="center">
-  <a href="#возможности">Возможности</a> ·
-  <a href="#загрузка">Загрузка</a> ·
-  <a href="#быстрый-старт">Быстрый старт</a> ·
-  <a href="#подключение">Подключение</a> ·
-  <a href="#звук">Звук и микрофон</a> ·
-  <a href="#буфер-обмена">Буфер обмена</a> ·
-  <a href="#обновления">Обновления</a> ·
-  <a href="#faq">Вопросы и ответы</a>
-</p>
+[Features](#features) · [Installation](#installation) · [USB / Wi-Fi](#connection) · [Input](#input) · [Audio / microphone](#audio) · [Clipboard](#clipboard) · [Performance](#performance) · [Troubleshooting](#troubleshooting) · [Contributing](CONTRIBUTING.md)
 
-<a id="возможности"></a>
-## Возможности
+<a id="features"></a>
+## What it does
 
-| | Что доступно |
+Move an editor, reference document or chat window onto your tablet. Apps keep running on the Mac; the Android client receives video and audio and sends input back.
+
+| Feature | What to expect |
 |---|---|
-| Рабочий стол | Расширение и зеркало; переключение режима, разрешения и частоты из меню Mac или настроек Android |
-| Пресеты | Кнопки **«Презентация»** (зеркало 60), **«Чтение»** (расширение 120) и **«Экономно»** (30) — одним касанием |
-| Retina | По умолчанию **1472×920 точек → 2944×1840 пикселей** на проверенном планшете |
-| Расположение | Хост запоминает положение второго дисплея и восстанавливает его после перезапуска; справа размещает только при первом запуске |
-| USB и Wi-Fi | Проводное подключение через встроенный `adb`; поиск Mac по Wi-Fi через mDNS, выбор компьютера или ручной адрес |
-| Звук | Отдельный системный выход «Xiaoxin Pad Pro 12.7», системная громкость и mute; звук передаётся только при выборе этого выхода |
-| Микрофон | Микрофон планшета появляется на Mac как устройство ввода — для звонков и диктовки. Включается тумблером и передаётся только во время соединения |
-| Буфер обмена | Двусторонняя синхронизация текста между Mac и планшетом, пока идёт сеанс |
-| Сенсорный ввод | Тап, перетаскивание, прокрутка двумя пальцами, правый клик долгим нажатием и экранная клавиатура |
-| Клавиатура и тачпад | Физические клавиши и сочетания (Meta → ⌘, Alt → ⌥, Ctrl → ⌃), кнопки мыши, перетаскивание и двухосевая прокрутка |
-| Вибро и панель | Короткая вибрация при подключении и обрыве; скрываемая панель и полупрозрачная перетаскиваемая кнопка **☰** с сохранением положения |
-| Диагностика | Оверлей по звеньям с NTP-синхронизацией часов и **живым графиком задержки**: захват Mac → экран планшета, кодирование → экран, декодер мс/fps, транзит ввода, сдвиг часов и RTT |
-| Кодек | HEVC (H.265) по умолчанию, H.264 (AVC) — по выбору; сервер и планшет согласуют формат при подключении |
-
-**Задержка на проверенном планшете** (TB371FC, USB, Retina 2944×1840, HEVC): «захват Mac → экран планшета» — **25–30 мс**, ввод планшет → Mac — ~6 мс, полный путь «касание → пиксель» — ~55–60 мс. Это уровень Sidecar и Moonlight на хорошем железе.
+| Desktop | Extended desktop or mirror; mode, resolution and requested frame rate controls on Mac and Android |
+| Display layout | Saves the extended display position; places it to the right on first use |
+| HiDPI | Tested tablet target: 1472×920 logical points / 2944×1840 backing pixels |
+| Transport | USB through bundled `adb`; Wi-Fi discovery with mDNS or manual `IP:7381` |
+| Video | HEVC by default; H.264 alternative negotiated with the client; hardware decoder compatibility varies |
+| Input | Touch, drag, two-finger scroll, long-press right click, on-screen keyboard, physical keyboard and mouse/trackpad |
+| Audio | Selectable tablet output on Mac, with system volume and mute |
+| Clipboard | Text only, subject to Android clipboard focus restrictions |
+| Microphone | Optional tablet-to-Mac audio; requires the microphone HAL driver and Android permission |
+| Controls | Hideable panel, draggable **☰** handle, settings presets and diagnostic overlay |
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/stats.jpg" alt="Оверлей диагностики с графиком задержки"></td>
-    <td><img src="docs/screenshots/settings.jpg" alt="Настройки клиента: пресеты, буфер обмена, микрофон"></td>
+    <td><img src="docs/screenshots/stats.jpg" alt="Streamed desktop with diagnostic overlay and latency history at bottom left"></td>
+    <td><img src="docs/screenshots/settings.jpg" alt="Android settings showing presets, playback, diagnostics, clipboard and microphone controls"></td>
   </tr>
   <tr>
-    <td align="center"><em>Оверлей диагностики: числа по звеньям и живой график</em></td>
-    <td align="center"><em>Настройки клиента: пресеты, буфер обмена, микрофон</em></td>
+    <td><em>Diagnostic overlay and sample history—UI illustration, not benchmark evidence. Labels containing “screen” do not establish physical display latency.</em></td>
+    <td><em>Android settings: presets, playback, diagnostics, clipboard and microphone. Screenshots show the Russian UI; wording may vary by version.</em></td>
   </tr>
 </table>
 
-Хост запрашивает **120 fps по умолчанию**. На статичном контенте macOS отдаёт кадры только при изменениях — счётчик FPS декодера тогда показывает 0–40, и это не потеря плавности: во время движения поток доходит до ~100 fps. Счётчик FPS — пропускная способность кодированных кадров, а не подтверждённые 120 отображённых кадров/с. Метрики оверлея измеряют звенья: «захват → экран» включает захват, кодирование, сеть, декод и рендер; «ввод» — только путь события планшет → Mac.
+<a id="quick-start"></a>
+## Quick start
 
-<a id="загрузка"></a>
-## Загрузка
+1. From the [release page](https://github.com/oproskyrin/DualScreenPOI/releases/latest), download the full **`DualScreen-vX.Y.Z-macos-arm64.pkg`** and **`DualScreenClient-vX.Y.Z.apk`**.
+2. Install the Mac package, restart when prompted, and open **DualScreen** from Applications. It runs in the **menu bar**, not the Dock.
+3. Grant **Screen Recording** and **Accessibility** on Mac as described below. Install and open the APK on Android.
+4. For USB, enable Android **USB debugging**, connect a data-capable cable, unlock the tablet and authorize your Mac. Choose **Connect via USB** in the client.
+5. Arrange the displays in macOS Displays settings and move a window onto the tablet. For tablet audio, select **Xiaoxin Pad Pro 12.7** as the Mac output.
 
-Откройте [последний опубликованный релиз](https://github.com/oproskyrin/DualScreenPOI/releases/latest) и скачайте оба файла:
+Prefer Wi-Fi? Use **Find Mac via Wi-Fi**, then choose your Mac, on the same trusted local network. No USB debugging is needed for Wi-Fi.
 
-| Устройство | Файл из релиза | Состав |
-|---|---|---|
-| Mac с Apple Silicon | `DualScreen-vX.Y.Z-macos-arm64.pkg` | Приложение, USB-компонент `adb` и аудиодрайвер DualScreenAudio |
-| Android-планшет | `DualScreenClient-vX.Y.Z.apk` | Клиент для Android 8+ с аппаратным HEVC-декодером |
+<a id="installation"></a>
+## Installation and permissions
 
-Новые версии публикуются на странице последнего релиза; номера файлов соответствуют версии. Архив `DualScreenHost-…tar.gz` с отдельным бинарным файлом не заменяет установщик. ZIP приложения предназначен для обновлений, не для первой установки со звуком.
+### Mac
 
-> **О подписи macOS.** Приложение использует локальную подпись, установщик не подписан Developer ID и не нотарифицирован Apple. Gatekeeper может заблокировать открытие — при необходимости используйте штатную кнопку **Open Anyway** в «Конфиденциальности и безопасности». Не отключайте Gatekeeper или SIP.
+The full package targets **Apple Silicon / macOS 13+** and requires administrator approval and a restart for its system audio components. Intel is not a supported full-installer target. End users do not need Homebrew, Xcode or a separate BlackHole/`adb` installation.
 
-<a id="быстрый-старт"></a>
-## Быстрый старт
+The current full-package builder includes:
 
-1. Установите `.pkg` на Mac и `.apk` на планшет (подробности — [ниже](#install)).
-2. Подключите планшет кабелем, разблокируйте его и разрешите отладку по USB для своего Mac.
-3. На планшете нажмите **«Подключить по USB»** — картинка появится сама.
-4. В Системных настройках Mac перетащите дисплеи так, как удобно, — расположение запомнится.
-5. Выберите «Xiaoxin Pad Pro 12.7» как выход звука, если хотите слушать звук на планшете.
-6. Перетащите нужное окно на экран планшета — работайте.
+- `/Applications/DualScreen.app`, including `adb` and the Sparkle updater;
+- `/Library/Audio/Plug-Ins/HAL/DualScreenAudio.driver` — tablet output;
+- `/Library/Audio/Plug-Ins/HAL/DualScreenMic.driver` — tablet microphone input;
+- licenses, notices and corresponding driver source in `/Library/Application Support/DualScreenAudio/` and `/Library/Application Support/DualScreenMic/`.
 
-Три пресета в настройках клиента меняют режим и частоту одним касанием: **«Презентация»** — зеркало и 60 fps для показа экрана, **«Чтение»** — расширение и 120 fps, **«Экономно»** — 30 fps для батареи.
+An app-only ZIP or legacy host-binary archive is **not** a complete first installation. Older installed packages may lack the mic driver; an app update cannot add it.
 
-<a id="install"></a>
-## Установка
+In **System Settings → Privacy & Security**, grant:
 
-### 1. Mac
+- **Screen Recording** (section name varies by macOS) for video;
+- **Accessibility** for injected mouse, touch and keyboard input;
+- **Local Network**, if requested, for local connections/discovery.
 
-Понадобятся **macOS 13+**, **Apple Silicon**, права администратора и перезагрузка для установки аудиодрайвера. Полный установщик не предназначен для Intel Mac. Homebrew, Xcode и отдельная установка `adb` пользователю не нужны.
+Quit and reopen the app if macOS asks. Signing identity changes, especially ad-hoc builds, can require granting permissions again after an update.
 
-1. Скачайте `.pkg` из релиза и откройте его. Он устанавливает:
-   - `/Applications/DualScreen.app` — приложение со встроенным `adb`;
-   - `/Library/Audio/Plug-Ins/HAL/DualScreenAudio.driver` — системный аудиокомпонент;
-   - `/Library/Application Support/DualScreenAudio/` — лицензию, сведения об изменениях и соответствующие исходники драйвера.
-2. Подтвердите установку в штатном диалоге macOS и **перезагрузите Mac**, когда предложит установщик. Перезагрузка нужна для HAL-драйвера.
-3. Откройте **DualScreen** из «Программ» или Spotlight. Управление находится в **строке меню**; значка в Dock нет по замыслу.
-4. Разрешите запись экрана в **Системные настройки → Конфиденциальность и безопасность → Запись экрана** (название раздела зависит от macOS). Для мыши, клавиатуры и касаний также разрешите **Универсальный доступ**. Если macOS просит перезапустить приложение, выполните это.
-5. При запросе доступа к локальной сети разрешите его для подключения по Wi-Fi. Автостарт при входе можно включить в меню приложения.
+> **Signing caveat:** do not assume Apple Developer ID signing or notarization. The default packaging uses an ad-hoc app signature and an unsigned installer; maintainer builds may use a local signing identity. Gatekeeper acceptance on another Mac is not guaranteed. Verify the download source, and use macOS **Open Anyway** only if you trust the file and the option is available. Do not disable Gatekeeper or SIP, or install someone else's local signing certificate as a workaround. Sparkle's update signature is not Apple notarization.
 
-Если macOS блокирует пакет или приложение, сначала проверьте источник скачивания. Только если доверяете файлу, используйте штатную кнопку **«Всё равно открыть» / Open Anyway** в разделе «Конфиденциальность и безопасность», если она доступна. Не отключайте Gatekeeper или SIP.
+### Android
 
-### 2. Android
+Install the APK from the same release. Android may ask you to allow installation from your browser or file manager. USB requires Developer options → **USB debugging** and approval for your own Mac. On Android 13+, notification permission lets you return to the session from the notification shade; it is not required for connection. Microphone permission is requested only when enabling mic forwarding.
 
-1. Скачайте `.apk` из того же релиза и откройте его на планшете. Android может попросить разрешить установку из выбранного браузера или файлового менеджера.
-2. Запустите **DualScreen**. Для USB включите параметры разработчика и **отладку по USB**.
-3. На Android 13+ разрешите уведомления, если хотите возвращаться к сеансу из шторки. Отказ не мешает соединению, но скрывает уведомление.
+APK signing currently uses the build environment's debug key. Builds from different environments may not update in place. Do not uninstall casually: uninstalling removes client settings. Report a signature mismatch with the old/new download sources rather than bypassing signature verification.
 
-<a id="подключение"></a>
-## Подключение
+<a id="connection"></a>
+## USB and Wi-Fi
 
-### USB
+**USB:** start the Mac app, connect a data cable, unlock and authorize the tablet. The host configures `adb reverse` for TCP 7381 using its bundled `adb`. Open the client and choose **Connect via USB** if necessary; there is no need to type `localhost`. Trust USB debugging only on computers you control.
 
-1. Запустите DualScreen на Mac и подключите планшет кабелем с передачей данных.
-2. Разблокируйте планшет и подтвердите **разрешение отладки по USB для этого Mac**. Разрешайте постоянное доверие только своему компьютеру.
-3. Хост настраивает соединение через встроенный `adb`. При необходимости откройте клиент и нажмите **«Подключить по USB»**; вводить `localhost` вручную не нужно.
+**Wi-Fi:** start the host on the same trusted local network. Choose **Find Mac via Wi-Fi**, then select a computer; discovery does not automatically choose the first result. If mDNS is blocked, enter the Mac's `IP:7381`. Guest isolation, VPNs and firewall/local-network permissions can prevent discovery or connection. USB and Wi-Fi addresses are kept separately.
 
-### Wi-Fi
+**Security boundary:** USB does not turn DSXP into an authenticated protocol or necessarily disable the network listener. A network peer that can reach the host port can attempt to receive the stream, inject input, exchange clipboard text or send mic data. Never forward TCP 7381 to the internet; avoid public/shared networks. See [SECURITY.md](SECURITY.md).
 
-1. Подключите Mac и планшет к одной доверенной сети и запустите хост.
-2. На Android нажмите **«Найти Mac по Wi-Fi»**, затем выберите компьютер из списка. Поиск сам не подключается к первому найденному Mac.
-3. Если mDNS недоступен, введите адрес Mac вручную: `IP:7381`. Последний Wi-Fi-адрес сохраняется отдельно от USB.
-
-> **В протоколе пока нет пейринга, аутентификации и шифрования.** Устройство с сетевым доступом к TCP-порту хоста может попытаться подключиться и получить трансляцию или передать ввод. Используйте только сеть с доверенными участниками; не открывайте порт 7381 в интернет и не подключайтесь через публичный Wi-Fi. Само название «домашняя сеть» не гарантирует безопасность.
-
-### Во время работы
-
-- Переместите дисплей планшета в настройках дисплеев macOS. Хост запомнит расположение.
-- Меняйте режим, разрешение и запрашиваемую частоту кадров из меню Mac или настроек клиента.
-- **Пресеты** в настройках клиента: «Презентация», «Чтение», «Экономно» — режим и частота одним касанием.
-- Нажмите **«Скрыть панель»**, чтобы оставить только кнопку **☰** без подложки и рамки. Её можно перетащить; нажатие снова раскрывает панель.
-- Нажмите тихое уведомление DualScreen в шторке Android, чтобы вернуться к текущему сеансу. Оно не меняет Mac и не создаёт новое подключение; после завершения процесса клиента восстановление через уведомление не гарантируется.
-- **«Отключиться»** и **«Отменить подключение»** останавливают автоматические повторы. Новое подключение запускается кнопкой пользователя.
+The client panel provides settings, keyboard and disconnect controls. **Hide panel** leaves a draggable **☰** handle; tap it to restore controls. **Disconnect** or **Cancel connection** stops automatic retries until you initiate another connection. The Android session notification returns to the existing client session; process termination is not a guaranteed recovery path.
 
 <a id="input"></a>
-### Физическая клавиатура и тачпад
+## Keyboard, touch and pointer
 
-Подключите устройства ввода к Android, включите **«Клавиатура и тачпад»** в настройках клиента и щёлкните по нужному окну Mac на изображении. Ввод передаётся при активной трансляции и фокусе на изображении; меню и диалоги клиента остаются на Android.
+Connect the keyboard/mouse/trackpad to **Android**, enable **Keyboard and trackpad** in client settings, and focus the streamed image. Mac Accessibility permission is required. Client dialogs and text fields retain Android input.
 
-| Клавиша на Android | Модификатор на Mac |
+| Android modifier | Mac modifier |
 |---|---|
 | Meta | Command ⌘ |
 | Alt | Option ⌥ |
 | Ctrl | Control ⌃ |
 
-Передаются нажатия, отпускания и повторы, кнопки мыши и прокрутка. При потере фокуса или соединения клиент освобождает удерживаемые клавиши и кнопки. Сочетания и жесты, зарезервированные Android, могут не дойти до Mac.
+Key down/up/repeat, mouse buttons and two-axis scrolling are forwarded. Held inputs are reset on focus loss/disconnect. Android-reserved shortcuts or gestures may never reach the Mac. Touch supports tapping, dragging, two-finger scrolling and long-press right click. Use the panel's keyboard action for the software keyboard. A local cursor is visual feedback, not proof that the Mac has processed an input event.
 
-<a id="codec"></a>
-## Кодек: HEVC и H.264
+<a id="audio"></a>
+## Audio and tablet microphone
 
-Клиент сообщает серверу список поддерживаемых декодеров, сервер отвечает фактически выбранным кодеком; согласованный формат виден в настройках клиента и в оверлее диагностики. По умолчанию — **HEVC**, при явном выборе в настройках или отсутствии поддержки — **H.264 (AVC)**. Смена кодека переподключает сеанс; старый сервер без согласования считается HEVC.
+### Mac → tablet sound
 
-Замер на Lenovo TB371FC по USB, 2944×1840, движение через тракт ввода:
+With the full HAL installation and host running, select **Xiaoxin Pad Pro 12.7** as the Mac sound output. During a connection, audio goes to the tablet. Selecting Mac speakers or another output stops tablet forwarding; this is not a simultaneous-output setup. System volume/mute and Android media volume both affect listening. Check the client's playback toggle too.
 
-| Метрика оверлея | HEVC | H.264 |
-|---|---|---|
-| Декодер | 6–8 мс · 96–105 fps | 217 мс · 72 fps |
-| Захват Mac → экран | 25–36 мс | 291–331 мс |
-| Кодирование → экран | 9–14 мс | 195–237 мс |
+### Tablet → Mac microphone
 
-На этом планшете H.264-декодер работает существенно медленнее HEVC, поэтому HEVC остаётся значением по умолчанию, а H.264 — резерв для устройств без поддержки HEVC. Поведение на других моделях не измерялось. Метрики заканчиваются передачей кадра в рендер и не равны задержке «палец → пиксель»; методика — в [docs/codec-negotiation.md](docs/codec-negotiation.md).
+1. Install a **full package containing `DualScreenMic.driver`** and restart as requested. A Sparkle/app-only update is not sufficient to add this system driver.
+2. Enable **Forward microphone** in Android settings (off by default) and grant Android microphone permission.
+3. If you enabled it after connecting, **disconnect and reconnect**: mic capability is advertised in the session hello, so the current session may not accept newly enabled mic audio.
+4. Select **Xiaoxin Pad Pro 12.7** as the **input** in macOS or the receiving application. This is separate from the identically named output. Grant that Mac application's microphone permission if requested.
 
-<a id="звук"></a>
-## Звук и микрофон
+Recording stops on toggle-off or disconnection; the enabled preference is saved and can resume recording on a later connection. The HAL device's availability follows the **Mac host process**, not the Android toggle or connection, so seeing an input device does not prove recording or incoming audio. No mic PCM is written to the connection logs. [Protocol and implementation notes](docs/mic-0x07.md).
 
-Полный `.pkg` включает **DualScreenAudio**, собственный HAL-драйвер на основе BlackHole. Отдельно ставить BlackHole или создавать составное аудиоустройство не нужно.
+<a id="clipboard"></a>
+## Text clipboard: Android limitation
 
-**Выход** называется «Xiaoxin Pad Pro 12.7»:
+Clipboard sync is enabled by default for capable peers and can be disabled in client settings. It transfers **text only, up to 1 MiB of UTF-8 text**; not images or files. Avoid copying secrets during a shared session.
 
-| Выбранный системный выход Mac | Куда идёт звук |
+**Mac → Android** is the verified normal-use direction. **Android → Mac is not an unrestricted background clipboard bridge:** Android 10+ restricts clipboard reading to a focused app. Copying in another app removes DualScreen's focus, and returning to DualScreen is **not guaranteed to resend** that clipboard: the current implementation listens for changes and does not explicitly re-read on resume. A readable clipboard change while DualScreen has focus is needed. Do not rely on this direction for a seamless copy-switch-paste workflow. See [clipboard details](docs/clipboard-sync.md).
+
+<a id="performance"></a>
+## Performance: what the numbers mean
+
+A **limited TB371FC USB test** with HEVC, 2944×1840 backing pixels and a 120 fps request reported roughly **25–30 ms** for the overlay's capture metric. This is a historical observation, **not a latency promise** or a cross-device benchmark.
+
+That metric begins at the **ScreenCaptureKit callback** and ends around Android **`MediaCodec.releaseOutputBuffer`**, when the decoded frame is submitted to the surface. It does **not** measure capture before the callback, compositor/presentation queues, physical panel scanout or touch-to-photon latency. Input transit ends at server message parsing, not application response. Do not add overlapping overlay intervals or a guessed display delay to manufacture a total.
+
+Clock synchronization and FIFO frame pairing also limit precision, particularly when frames drop. Use a moving source, a sample series and a fixed configuration, not one screenshot. [Measurement boundaries and codec comparisons](docs/codec-negotiation.md).
+
+The host requests **120 fps** by default, not 120 physically displayed frames per second. ScreenCaptureKit may emit few frames on a static desktop. Requested FPS, virtual display mode, Android panel refresh and decoder throughput are different quantities. H.264 is an alternative, not a guaranteed speed improvement; HEVC remains the default.
+
+<a id="troubleshooting"></a>
+## Troubleshooting and updates
+
+| Symptom | First checks |
 |---|---|
-| Xiaoxin Pad Pro 12.7 | На планшет, когда соединение активно |
-| Динамики Mac или другой выход | На выбранный выход; передача на планшет прекращается |
+| Black/no image | Host running; Screen Recording allowed for this app/signature; quit/reopen after permission changes; reconnect |
+| Image works, input does not | Accessibility permission; client input toggle; focus the stream rather than a client dialog |
+| USB unavailable | Data cable, unlocked tablet, USB debugging, Mac authorization, installed client |
+| Wi-Fi discovery empty | Same trusted subnet; isolation/VPN/firewall/mDNS; try `IP:7381` without exposing the port publicly |
+| No tablet audio | Full HAL package installed and restarted; host running; selected Mac output; volume/mute and client playback |
+| Mic device absent or silent | Mic HAL installed; restart after package; Android permission/toggle; reconnect after enabling; select Mac input |
+| Latency increased | Verify moving content, resolution/codec, sustained load and transport; compare sample series rather than stale values |
 
-Системные громкость и mute регулируют передаваемый звук. Медиа-громкость Android дополнительно влияет на динамики планшета.
+Use **Check for Updates…** in the Mac menu. Sparkle checks for updates, but download/install requires confirmation. Ed25519 feed/archive verification does not establish Apple Developer ID trust. App-only updates leave system HAL drivers untouched; driver additions/upgrades need a new full package and administrator approval/restart. Update Android using the release APK. Recheck permissions after a signing change.
 
-**Микрофон** (с версии 1.6.0) работает в обратную сторону: включите тумблер **«Передавать микрофон»** в настройках клиента — и на Mac появится устройство ввода с тем же именем. Оно доступно, только пока идёт соединение, и пропадает при отключении или запуске клиента. Запись начинается только по явному включению тумблера с разрешением Android; аудио в журналы не пишется.
+Logs: Mac `~/Library/Logs/DualScreen/host.log` and `host.log.1`; Android **Settings → Connection log**, with files under `Android/data/com.oleg.dualscreen/files/logs/` when accessible. Logs include connection metadata and clipboard sizes/hashes, not clipboard text, video/audio payloads or typed text/key codes. **Review and redact logs and screenshots before sharing**; metadata can identify your devices and network.
 
-<a id="буфер-обмена"></a>
-## Буфер обмена
+### Known limits
 
-Пока идёт сеанс, текст синхронизируется автоматически в обе стороны: скопировали на Mac — вставляйте на планшете, и наоборот. Синхронизируется только текст (до 1 МБ за фрагмент); изображения и файлы не переносятся. Тумблер **«Общий буфер обмена»** выключает синхронизацию. Текст буфера никогда не попадает в журналы.
+- One connected client; only TB371FC is currently verified, not a broad tablet/OS matrix.
+- Extended displays use private `CGVirtualDisplay` APIs, which Apple can change.
+- No secure pairing/authentication/encryption, HDR, stylus pressure/tilt, or complete sleep/orientation handling.
+- Android clipboard focus restrictions and device-specific decoder/input behavior apply.
 
-<a id="updates"></a>
-## Обновления
+<a id="feedback"></a>
+## Help test the beta
 
-В меню Mac есть **«Проверить обновления…»**. Приложение использует Sparkle **2.10.1**: проверка обновлений включена, а загрузка и установка требуют подтверждения пользователя. Лента и архив приложения проверяются по подписи **Ed25519**. Эта подпись защищает канал обновлений, но не заменяет Developer ID и нотарификацию Apple.
+**Does your tablet work? Tell us—even if everything works.** Open a [device compatibility report](https://github.com/oproskyrin/DualScreenPOI/issues/new?template=device-compatibility.yml) with the exact model, OS/app versions, USB/Wi-Fi and features tested. For failures, use the [bug report](https://github.com/oproskyrin/DualScreenPOI/issues/new?template=bug-report.yml). English and Russian reports are welcome. A request for testing is not a claim of compatibility.
 
-| Обновление | Как устанавливается |
-|---|---|
-| Только приложение | Через Sparkle, без замены HAL-драйвера и без повторной установки системного аудиокомпонента; настройки и расположение дисплея сохраняются отдельно от приложения |
-| Аудиодрайвер или микрофон | Новым полным `.pkg`, с правами администратора и перезагрузкой |
-| Android-клиент | Новым `.apk` из релиза |
+Please share only screenshots you own and have reviewed for private desktop content. Security vulnerabilities belong in the [private reporting process](SECURITY.md), not public bug reports.
 
-Канал `macos-updates` служит для ленты обновлений, а не для первой установки. При обновлении приложения активная трансляция прерывается и восстанавливается автоматически.
+## Build and contribute
 
-<a id="limitations"></a>
-## Совместимость и ограничения
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test commands and review expectations, [macOS packaging](packaging/macos/README.md) for installer requirements, and the protocol notes for [codecs](docs/codec-negotiation.md), [clipboard](docs/clipboard-sync.md) and [mic](docs/mic-0x07.md). Build/test success alone does not establish installation, granted permissions or live hardware behavior.
 
-- Проверенная модель — **Lenovo Xiaoxin Pad Pro 12.7 (2023), TB371FC**, не Legion. Совместимость остальных Android-планшетов и их HEVC-декодеров пока не подтверждена.
-- Полный установщик рассчитан на **Apple Silicon, macOS 13+**. Заявленный минимум macOS не означает испытаний на каждой версии системы.
-- Расширение использует приватный API `CGVirtualDisplay`, который Apple может изменить. Одновременно обслуживается один клиент.
-- На Retina-разрешении 2944×1840 устойчиво передаётся ~55–60 fps; запрос 120 fps даёт более плавные движения, но добавляет задержку — пресеты позволяют выбрать баланс.
-- Пейринг и защита сетевого протокола ещё не реализованы. USB требует разрешённой отладки на Android.
-- Портретная ориентация на лету, полноценная обработка сна Mac, давление/наклон стилуса и HDR пока не реализованы.
-- Микрофон планшета появляется на Mac только во время активного соединения; это поведение намеренное.
+## Licenses
 
-<a id="faq"></a>
-## Вопросы и ответы
-
-<details>
-<summary><strong>Почему приложение открыто, но его нет в Dock?</strong></summary>
-
-DualScreen работает в строке меню. Само приложение установлено в `/Applications/DualScreen.app` и доступно через Finder и Spotlight. Проверьте также разрешение записи экрана; для управления Mac нужен «Универсальный доступ».
-
-</details>
-
-<details>
-<summary><strong>USB не подключается. С чего начать?</strong></summary>
-
-Проверьте кабель с передачей данных, разблокируйте планшет, включите отладку по USB и подтвердите доверие к Mac. Убедитесь, что клиент установлен, а хост запущен. Затем нажмите «Подключить по USB». Homebrew и ручная установка `adb` для полного `.pkg` не нужны.
-
-</details>
-
-<details>
-<summary><strong>Mac не находится по Wi-Fi?</strong></summary>
-
-Устройства должны видеть друг друга в локальной сети. Гостевая изоляция, VPN, запрет локальной сети или фильтрация mDNS могут мешать поиску. Попробуйте ручной адрес `IP:7381` и проверьте разрешения приложения в macOS. Не открывайте порт в интернет ради подключения.
-
-</details>
-
-<details>
-<summary><strong>Почему нет звука или выхода планшета?</strong></summary>
-
-Убедитесь, что установлен полный `.pkg`, Mac перезагружен после установки драйвера, хост запущен и клиент подключён. Выберите «Xiaoxin Pad Pro 12.7» в системном меню звука; проверьте mute и громкость на обеих сторонах. Выбор динамиков Mac намеренно останавливает передачу звука на планшет.
-
-</details>
-
-<details>
-<summary><strong>Как включить микрофон планшета?</strong></summary>
-
-Настройки клиента → **«Передавать микрофон»**. Android запросит разрешение на запись — разрешите. На Mac появится устройство ввода «Xiaoxin Pad Pro 12.7»; выберите его в источниках ввода (Zoom, OBS и т. д.). Устройство доступно только во время соединения и исчезает после отключения. Запись выключается тем же тумблером.
-
-</details>
-
-<details>
-<summary><strong>Буфер обмена не синхронизируется?</strong></summary>
-
-Синхронизируется только текст, пока идёт соединение, и только если включён тумблер «Общий буфер обмена». Переносятся фрагменты до 1 МБ. На Android чтение буфера ограничено системой: клиент должен быть на переднем плане. Если скопировали в другом приложении планшета — вернитесь в DualScreen, и текст уйдёт на Mac.
-
-</details>
-
-<details>
-<summary><strong>Изображение есть, но задержка выросла?</strong></summary>
-
-Проверьте оверлей диагностики (Настройки → «Показывать статистику»). Если «захват Mac → экран» сильно выше 30–40 мс — закройте тяжёлые приложения на Mac или переключитесь на пресет «Экономно» (30 fps). Хост также снижает битрейт при перегрузке сети и возвращает его автоматически. Журналы: Mac — `~/Library/Logs/DualScreen/host.log`, Android — «Настройки → Журнал соединения».
-
-</details>
-
-<details>
-<summary><strong>Где взять журналы для отчёта об ошибке?</strong></summary>
-
-На Mac: `~/Library/Logs/DualScreen/host.log` и `host.log.1`. На Android: **Настройки → Журнал соединения**; файлы `connection.log` и `connection.log.1` находятся в `Android/data/com.oleg.dualscreen/files/logs/` (Android может ограничивать доступ).
-
-На каждой стороне журнал ротируется между двумя файлами размером до **512 КиБ каждый**. В нём есть время, попытки и причины разрывов; введённый текст, коды клавиш, кадры, аудио и содержимое буфера обмена не записываются. Перед публикацией просмотрите журнал на личные сведения, например адреса устройств.
-
-Сообщите модель планшета, версии macOS/Android и приложений, USB или Wi-Fi, шаги воспроизведения. Создать отчёт можно в [Issues](https://github.com/oproskyrin/DualScreenPOI/issues).
-
-</details>
-
-<a id="architecture"></a>
-## Как это устроено
-
-```text
-Mac                                             Android
-┌────────────────────────────────┐               ┌───────────────────────────┐
-│ Виртуальный дисплей / зеркало   │   HEVC-видео  │ MediaCodec → SurfaceView  │
-│ ScreenCaptureKit → VideoToolbox ├──────────────►│                           │
-│ Системный звук → PCM            ├──────────────►│ AudioTrack                │
-│ Микрофонный HAL ← PCM           │◄──────────────┤ AudioRecord (микрофон)    │
-│ CGEvent                        │◄──────────────┤ Касания, клавиатура, мышь  │
-│ NSPasteboard ← → Clipboard      │◄─────────────►│ ClipboardManager          │
-└────────────────────────────────┘  ввод / статы  └───────────────────────────┘
-                    TCP 7381 · DSXP v1
-              USB: adb reverse · Wi-Fi: mDNS / IP
-```
-
-Протокол DSXP v1: фрейм `[u8 type][u32 BE len][payload]`; `0x00` — control JSON (включая удалённые команды setMode/setLogical/setFps), `0x01` — Annex-B HEVC с VPS/SPS/PPS в ключевых кадрах, `0x02` — input JSON, `0x03` — статистика с NTP-синхронизацией, `0x04` — PCM16LE 48 кГц стерео (выход), `0x05` — тайминги задержки, `0x06` — буфер обмена, `0x07` — микрофон планшета.
-
-<a id="development"></a>
-## Разработка
-
-Для сборки нужны macOS с Command Line Tools и совместимым Swift toolchain, Python 3; для Android — JDK 17, Gradle и Android SDK 35. Это требования разработчика, не пользователя готового установщика.
-
-```bash
-# Хост и Android-клиент
-(cd host && swift build -c release)
-(cd android && gradle assembleRelease test lint --no-daemon)
-
-# Изолированные регрессионные проверки Mac
-bash scripts/test-host-audio.sh
-bash scripts/test-host-layout.sh
-bash scripts/test-host-server.sh
-bash scripts/test-host-input.sh
-bash scripts/test-host-app.sh
-bash scripts/test-host-audio-presence.sh
-bash scripts/test-host-codec.sh
-bash scripts/test-host-mic.sh
-bash scripts/test-host-bitrate.sh
-bash scripts/test-host-clipboard.sh
-
-# После актуальной release-сборки хоста: smoke-тест без дисплея и TCC
-python3 scripts/test-host-app-smoke.py
-
-# Проверки логики упаковки и публикации, без самой публикации
-python3 -m unittest discover -s tests -v
-```
-
-Проверки звука с установленными устройствами запускаются отдельно: `bash scripts/test-host-audio.sh --devices`. Они **временно меняют системный выход и громкость**, затем восстанавливают их. Изолированные тесты и smoke-проверка не доказывают установку, выданные разрешения, работу физического ввода или сквозное обновление.
-
-<details>
-<summary><strong>Собрать полный установщик и исходники аудиодрайвера</strong></summary>
-
-Сначала подготовьте checkout BlackHole на commit, закреплённом в `scripts/build-dualscreen-audio.sh`, либо используйте соответствующие исходники уже собранного драйвера:
-
-```bash
-BLACKHOLE_SOURCE=/path/to/BlackHole bash scripts/build-dualscreen-audio.sh          # выход
-BLACKHOLE_SOURCE=/path/to/BlackHole bash scripts/build-dualscreen-audio.sh --mic    # микрофон
-bash scripts/build-macos-app.sh --version X.Y.Z
-DUALSCREEN_TEST_ARTIFACTS=dist/macos python3 -m unittest discover -s tests -p test_macos_packaging.py -v
-```
-
-Аудиокомпоненты и полные архивы исходников появятся в `dist/DualScreenAudio/` и `dist/DualScreenMic/`; приложение, полный `.pkg` и ZIP для обновлений — в `dist/macos/`. Сборка сама ничего не устанавливает, не перезапускает CoreAudio и не публикует релиз.
-
-Упаковщику нужны настоящий публичный ключ Sparkle, его framework и лицензия, а также переносимый `adb` с `NOTICE.txt`. Приватный ключ подписи обновлений в репозиторий не входит. Подробности и параметры: [packaging/macos/README.md](packaging/macos/README.md).
-
-</details>
-
-<details>
-<summary><strong>Параметры CLI-хоста</strong></summary>
-
-```text
---mirror            зеркало вместо расширения
---logical WxH       логическое разрешение (1472x920 / 1920x1200 / 2944x1840)
---fps N             запрашиваемые кадры/с (120 / 90 / 60)
---bitrate N         потолок битрейта, Мбит/с (по умолчанию 60)
---port N            TCP-порт (по умолчанию 7381)
-```
-
-CLI и архив отдельного бинарного файла предназначены для разработки. Для обычной установки используйте полный `.pkg`.
-
-</details>
-
-<a id="license"></a>
-## Лицензии
-
-Основное приложение DualScreen распространяется под **[MIT](LICENSE)**. Отдельные HAL-компоненты **DualScreenAudio** и **DualScreenMic**, основанные на BlackHole, распространяются под **GPL-3.0**; лицензия основного приложения не заменяет лицензию драйверов.
-
-С драйверами поставляются исходная лицензия, `NOTICE.txt` с изменениями и атрибуцией, точный upstream commit (`UPSTREAM_SHA`), полный архив соответствующих исходников **`*-source.tar.gz`** и инструкция сборки. Установщик размещает их в `/Library/Application Support/DualScreenAudio/`. Архив включает исходники upstream, модифицированные файлы и скрипт воспроизводимой процедуры сборки; его достаточно для повторной сборки без отдельного checkout BlackHole. Это не обещание побитово одинакового пакета при разных версиях инструментов.
-
-Лицензии Sparkle и USB-компонента `adb` также включены в приложение.
+The main app is **[MIT](LICENSE)**. Both separate BlackHole-derived HAL drivers, **DualScreenAudio and DualScreenMic**, are **GPL-3.0**. Each driver ships its license, change/attribution notice, pinned upstream commit, full corresponding-source archive (`*-source.tar.gz`) and rebuild instructions in its Application Support directory. The MIT license does not replace the drivers' GPL obligations. Sparkle and `adb` notices are bundled with the app.

@@ -1,9 +1,27 @@
 # DSXP microphone (0x07) — tablet mic as a Mac input device
 
 The tablet's microphone becomes an input device on the Mac, like the existing
-tablet-audio output HAL but in the opposite direction. Status: implemented on
-the Mac side (FrameServer 0x07 routing, MicInputRoute, DualScreenMic HAL
-variant, packaging, tests); Android side pending.
+tablet-audio output HAL but in the opposite direction. Implemented on both
+Mac (FrameServer 0x07 routing, MicInputRoute, DualScreenMic HAL) and Android
+(AudioRecordMicRecorder, MicStreamer and permission/toggle UI). See the
+limited live verification below; it does not establish compatibility on other
+tablets or all receiving Mac applications.
+
+## User setup and lifecycle
+
+Install a full macOS package containing **both** DualScreenAudio and
+DualScreenMic; an app-only/Sparkle update cannot add the mic HAL. The full
+installer declares a required restart. Enable microphone forwarding on Android
+and grant RECORD_AUDIO. If enabled during an existing connection, disconnect
+and reconnect: `micHelloFlag()` is sampled for the hello, and starting capture
+afterwards does not renegotiate the host's capability gate.
+
+Select the tablet-named **input** in macOS or the receiving app (separate from
+the same-named output); grant that app its own Mac mic permission if requested.
+HAL visibility follows the **host process heartbeat**, not the client connection
+or mic toggle. Seeing the device does not prove recording. Toggle-off or
+disconnection stops Android recording; the enabled preference is saved and may
+resume recording on a later connection.
 
 ## Frame
 
@@ -70,6 +88,9 @@ into the DualScreenMic ring, and captured on the Mac via AVFoundation
 (RMS −30.6 dB against a −inf silent baseline). Mic device appears as
 "Xiaoxin Pad Pro 12.7" (UID DualScreenMic_UID) alongside the output HAL.
 
-Deployment notes: the mic HAL pkg (dist/DualScreenMic/DualScreenMic-*.pkg)
-installs with admin rights and restarts coreaudiod; the host sink re-scans
-for the UID per callback, so no host restart is needed after installation.
+Deployment notes: the historical live check used a separately installed mic
+component with administrator approval and a CoreAudio restart. The current
+full-package distribution declares `RequireRestart` for both HAL components;
+follow Installer's restart prompt rather than manually killing coreaudiod.
+The host sink re-scans for its UID, but that does not remove the package restart
+requirement or the need to renegotiate a session that advertised mic=false.

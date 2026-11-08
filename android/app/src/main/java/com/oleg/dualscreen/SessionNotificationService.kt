@@ -30,7 +30,7 @@ import androidx.core.app.ServiceCompat
  */
 class SessionNotificationService : Service() {
     private val handler = Handler(Looper.getMainLooper())
-    private val updates = SessionNotificationUpdates()
+    private val updates = SessionNotificationUpdates(UiStrings { id, args -> localizedContext().getString(id, *args) })
     private var promoted = false
     private var notificationsVisible = false
     private val manager get() = getSystemService(NotificationManager::class.java)
@@ -59,8 +59,8 @@ class SessionNotificationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Соединение с Mac", NotificationManager.IMPORTANCE_LOW).apply {
-            description = "Тихий статус DualScreen. Нажмите уведомление, чтобы вернуться к экрану Mac."
+        manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, localizedContext().getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW).apply {
+            description = localizedContext().getString(R.string.notification_channel_note)
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
@@ -87,7 +87,7 @@ class SessionNotificationService : Service() {
                 }
             } catch (e: RuntimeException) {
                 Log.w("DualScreen", "Cannot promote Mac session service", e)
-                Toast.makeText(this, "Android не разрешил фоновое соединение. Оставьте DualScreen открытым.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, localizedContext().getString(R.string.background_denied), Toast.LENGTH_LONG).show()
                 stopSelfResult(startId)
                 return START_NOT_STICKY
             }
@@ -97,6 +97,9 @@ class SessionNotificationService : Service() {
         return START_NOT_STICKY
     }
 
+    // Services need the per-app locale explicitly on Android 12 and earlier.
+    private fun localizedContext() = androidx.core.content.ContextCompat.getContextForLanguage(this)
+
     private fun notification(status: SessionNotificationStatus): Notification {
         // Explicit immutable activity PendingIntent, no autoconnect/addr extras. singleTask
         // returns to the existing session; a stale tap can only open the home screen.
@@ -104,11 +107,13 @@ class SessionNotificationService : Service() {
             Intent(this, MainActivity::class.java).setAction(ACTION_OPEN)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val context = localizedContext()
+        val strings = UiStrings { id, args -> context.getString(id, *args) }
+        return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_dualscreen)
-            .setContentTitle(status.title)
-            .setContentText(status.detail.replace("\n", " · "))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(status.detail))
+            .setContentTitle(status.title(strings))
+            .setContentText(status.detail(strings).replace("\n", " · "))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(status.detail(strings)))
             .setContentIntent(open)
             .setOngoing(true)
             .setAutoCancel(false)

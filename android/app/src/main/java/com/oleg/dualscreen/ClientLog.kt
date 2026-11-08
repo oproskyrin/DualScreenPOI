@@ -32,8 +32,8 @@ class ClientLog(private val directory: () -> File?, private val maxBytes: Int = 
                 val dir = directory()
                 if (dir == null) "" else listOf("connection.log.1", "connection.log")
                     .map { File(dir, it) }.filter { it.isFile }.joinToString("") { it.readText() }.takeLast(24000)
-            }.getOrDefault("").ifEmpty { "Журнал пока пуст или хранилище недоступно." })
-        } }.onFailure { result.complete("Журнал недоступен.") }
+            }.getOrDefault(""))
+        } }.onFailure { result.complete("") }
         return result
     }
     override fun close() { writer.shutdown() }

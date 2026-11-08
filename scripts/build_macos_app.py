@@ -40,6 +40,17 @@ def validate_binary(binary, arch, apple_only=False):
     return deps
 
 
+def copy_localizations(resources):
+    """Install catalogs in the app, independent of SwiftPM's build-tree bundle."""
+    source = ROOT / "host/Sources/DualScreenHost/Resources"
+    for language in ("en", "ru"):
+        localized = source / f"{language}.lproj"
+        for filename in ("Localizable.strings", "InfoPlist.strings"):
+            if not (localized / filename).is_file():
+                raise ValueError(f"missing host localization: {localized / filename}")
+        shutil.copytree(localized, resources / localized.name)
+
+
 def make_icon(source, destination, scratch):
     iconset = scratch / "AppIcon.iconset"
     iconset.mkdir()
@@ -124,15 +135,17 @@ def validate_audio_component(package, scratch, arch, variant="audio"):
 def write_distribution(path, app_version, audio_version, mic_version=None):
     distribution = ET.Element("installer-gui-script", {"minSpecVersion": "2"})
     ET.SubElement(distribution, "title").text = "DualScreen"
+    ET.SubElement(distribution, "welcome", {"file": "Welcome.html", "mime-type": "text/html"})
+    ET.SubElement(distribution, "readme", {"file": "ReadMe.html", "mime-type": "text/html"})
     ET.SubElement(distribution, "options", {"customize": "never", "require-scripts": "false", "rootVolumeOnly": "true", "hostArchitectures": "arm64"})
     ET.SubElement(distribution, "domains", {"enable_anywhere": "false", "enable_currentUserHome": "false", "enable_localSystem": "true"})
     os_versions = ET.SubElement(distribution, "allowed-os-versions")
     ET.SubElement(os_versions, "os-version", {"min": "13.0"})
     outline = ET.SubElement(distribution, "choices-outline")
-    choices = [("app", "com.oleg.dualscreen.installer", "DualScreen application", "DualScreenApp.pkg", app_version),
-               ("audio", "com.dualscreen.audio.installer", "DualScreen tablet audio output", "DualScreenAudio.pkg", audio_version)]
+    choices = [("app", "com.oleg.dualscreen.installer", "installer.app", "DualScreenApp.pkg", app_version),
+               ("audio", "com.dualscreen.audio.installer", "installer.audio", "DualScreenAudio.pkg", audio_version)]
     if mic_version is not None:
-        choices.append(("mic", "com.dualscreen.audio.installer.mic", "DualScreen tablet microphone input", "DualScreenMic.pkg", mic_version))
+        choices.append(("mic", "com.dualscreen.audio.installer.mic", "installer.mic", "DualScreenMic.pkg", mic_version))
     for choice, identifier, title, filename, version in choices:
         ET.SubElement(outline, "line", {"choice": choice})
         element = ET.SubElement(distribution, "choice", {"id": choice, "title": title, "visible": "false", "start_selected": "true"})
@@ -216,6 +229,7 @@ def main():
         (contents / "Frameworks").mkdir()
         (resources / "Licenses").mkdir(parents=True)
         shutil.copy2(host, contents / "MacOS/DualScreenHost")
+        copy_localizations(resources)
         shutil.copy2(adb, resources / "adb")
         shutil.copy2(notice, resources / "Licenses/adb-NOTICE.txt")
         shutil.copy2(sparkle_license, resources / "Licenses/Sparkle-LICENSE.txt")
@@ -228,6 +242,8 @@ def main():
             run("/usr/bin/install_name_tool", "-add_rpath", "@executable_path/../Frameworks", executable)
         make_icon(ROOT / "assets/branding/dualscreen-icon.png", resources / "AppIcon.icns", scratch)
         info = {"CFBundleIdentifier": "com.oleg.dualscreen.host", "CFBundleName": "DualScreen", "CFBundleDisplayName": "DualScreen", "CFBundleExecutable": "DualScreenHost", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL", "CFBundleInfoDictionaryVersion": "6.0", "CFBundleShortVersionString": args.version, "CFBundleVersion": args.version, "LSMinimumSystemVersion": "13.0", "LSUIElement": True, "NSHighResolutionCapable": True, "SUFeedURL": FEED, "SUPublicEDKey": public_key, "SUEnableAutomaticChecks": True, "SUAutomaticallyUpdate": False, "SUAllowsAutomaticUpdates": False, "SUVerifyUpdateBeforeExtraction": True, "SURequireSignedFeed": True, "NSLocalNetworkUsageDescription": "DualScreen connects to your tablet on the local network."}
+        info["CFBundleDevelopmentRegion"] = "en"
+        info["CFBundleLocalizations"] = ["en", "ru"]
         (contents / "Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
         sign_own(resources / "adb", args.codesign_identity)
         # Preserve notarized vendor helpers/framework signatures. Sign only our
@@ -249,7 +265,8 @@ def main():
             shutil.copy2(args.mic_component_pkg, scratch / "DualScreenMic.pkg")
             distribution = scratch / "Distribution.xml"
             write_distribution(distribution, args.version, audio_version, mic_version)
-            product_args = ["/usr/bin/productbuild", "--distribution", distribution, "--package-path", scratch]
+            product_args = ["/usr/bin/productbuild", "--distribution", distribution, "--package-path", scratch,
+                            "--resources", ROOT / "packaging/macos/installer-resources"]
             if args.installer_identity:
                 product_args += ["--sign", args.installer_identity, "--timestamp"]
             run(*product_args, package)

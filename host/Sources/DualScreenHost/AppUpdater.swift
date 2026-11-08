@@ -48,7 +48,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
         // The host menu has autoenablesItems=false, so target validation alone
         // does not update it. KVO and menuNeedsUpdate both refresh explicitly.
         menuItem?.isEnabled = canCheckForUpdates && startupError == nil
-        menuItem?.toolTip = startupError ?? (controller == nil ? "Обновления доступны только в установленном DualScreen.app с корректной конфигурацией Sparkle" : nil)
+        menuItem?.toolTip = startupError ?? (controller == nil ? L10n.text("updater.unavailable") : nil)
     }
 
     func checkForUpdates() {
@@ -73,6 +73,9 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
                 "validBundle": AppRuntimePolicy.updaterEligible(bundleURL: bundle.bundleURL, executableURL: bundle.executableURL, info: info),
                 "updaterInitialized": controller != nil,
                 "canCheck": canCheckForUpdates,
+                "localizedUpdateTitle": L10n.text("menu.updates"),
+                "localizedFrameRate": L10n.format("value.fps", 120),
+                "localizationsInApp": Bundle.main.path(forResource: "en", ofType: "lproj") != nil,
                 "error": startupError ?? ""]
     }
 }
@@ -91,7 +94,7 @@ enum UpdaterTestSession {
         let applications = ["/Applications/", NSHomeDirectory() + "/Applications/"]
         guard Bundle.main.bundleURL.pathExtension == "app", !applications.contains(where: { path.hasPrefix($0) }) else {
             throw NSError(domain: "DualScreen.UpdaterTest", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "--updater-test requires an isolated fixture outside Applications"])
+                          userInfo: [NSLocalizedDescriptionKey: L10n.text("updater.test.isolation")])
         }
         let data = try JSONSerialization.data(withJSONObject: ["bundlePath": path, "expires": Date().addingTimeInterval(86400).timeIntervalSince1970])
         try data.write(to: marker, options: .atomic)

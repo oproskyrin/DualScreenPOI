@@ -35,6 +35,8 @@ class DsxpConnection(
         fun onClipboard(text: String, hash: String) {}
         /** Terminal handshake error: do not retry an unsupported decoder forever. */
         fun onRejected(reason: String) { onDisconnected(reason) }
+        /** Typed presentation error; legacy listeners still receive exact diagnostic metadata. */
+        fun onRejected(error: CodecNegotiation.Rejected) { onRejected(error.message.orEmpty()) }
     }
 
     @Volatile private var socket: Socket? = null
@@ -187,7 +189,7 @@ class DsxpConnection(
             disconnectReason = e.message ?: "Codec negotiation failed"
             running.set(false)
             sendExecutor.shutdownNow()
-            listener.onRejected(disconnectReason)
+            listener.onRejected(e)
             return false
         } catch (e: Exception) {
             // Preserve explicit send/surface/manual reasons instead of replacing

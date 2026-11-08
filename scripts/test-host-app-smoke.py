@@ -6,6 +6,7 @@ The fixture uses a synthetic PUBLIC key only; this is not an update-signature te
 Run after: (cd host && swift build -c release)
 """
 import base64
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ assert BINARY.exists(), "Build the release host first"
 assert BINARY.stat().st_mtime >= max(p.stat().st_mtime for p in SOURCES), "Release binary is stale; rebuild before smoke testing (old binaries ignore the smoke flag)"
 FRAMEWORK = ROOT / "host/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 assert FRAMEWORK.is_dir(), "Sparkle artifact missing; build the host first"
-SCRATCH = Path(os.environ.get("TMPDIR", str(Path.home() / ".hermes/cache/scratch")))
+SCRATCH = Path(os.environ.get("BUILD_SCRATCH_ROOT", str(Path.home() / ".hermes/cache/scratch")))
 SCRATCH.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="dualscreen-app-smoke-", dir=SCRATCH) as directory:
@@ -30,6 +31,15 @@ with tempfile.TemporaryDirectory(prefix="dualscreen-app-smoke-", dir=SCRATCH) as
     executable = app / "Contents/MacOS/DualScreenHost"
     executable.parent.mkdir(parents=True)
     shutil.copy2(BINARY, executable)
+    # Use the SAME resource copier as the real builder. The fixture has no
+    # SwiftPM resource bundle, so loading must work from installed resources.
+    spec = importlib.util.spec_from_file_location("builder", ROOT / "scripts/build_macos_app.py")
+    assert spec is not None and spec.loader is not None
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    resources = app / "Contents/Resources"
+    resources.mkdir()
+    builder.copy_localizations(resources)
     framework_parent = app / "Contents/Frameworks"
     framework_parent.mkdir()
     shutil.copytree(FRAMEWORK, framework_parent / "Sparkle.framework", symlinks=True)
@@ -38,6 +48,8 @@ with tempfile.TemporaryDirectory(prefix="dualscreen-app-smoke-", dir=SCRATCH) as
         "CFBundlePackageType": "APPL",
         "CFBundleExecutable": "DualScreenHost",
         "CFBundleName": "DualScreen Smoke Fixture",
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleLocalizations": ["en", "ru"],
         "CFBundleVersion": "0.13.0",
         "CFBundleShortVersionString": "0.13.0",
         "LSUIElement": True,
@@ -53,8 +65,8 @@ with tempfile.TemporaryDirectory(prefix="dualscreen-app-smoke-", dir=SCRATCH) as
     home.mkdir()
     env = dict(os.environ, CFFIXED_USER_HOME=str(home), HOME=str(home))
 
-    def run(binary, expected_status):
-        result = subprocess.run([str(binary), "--app-smoke-test"], env=env, text=True, capture_output=True, timeout=15)
+    def run(binary, expected_status, language="en"):
+        result = subprocess.run([str(binary), "--app-smoke-test", "-AppleLanguages", f"({language})"], env=env, text=True, capture_output=True, timeout=15)
         assert result.returncode == expected_status, (result.returncode, result.stdout, result.stderr)
         assert "[ds]" not in result.stdout and "[usb]" not in result.stdout, result.stdout
         values = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
@@ -64,6 +76,12 @@ with tempfile.TemporaryDirectory(prefix="dualscreen-app-smoke-", dir=SCRATCH) as
     plist_path = app / "Contents/Info.plist"
     plist_path.write_bytes(plistlib.dumps(info))
     valid = run(executable, 0)
+    for language, expected in (("en", "Check for Updates…"), ("ru", "Проверить обновления…"), ("fr", "Check for Updates…")):
+        localized = run(executable, 0, language)
+        assert localized["localizedUpdateTitle"] == expected, localized
+        assert localized["localizationsInApp"] is True, localized
+        assert "120" in localized["localizedFrameRate"], localized
+    print("PASS relocated app loads EN/RU and unsupported-language fallback from installed resources")
     assert valid["validBundle"] and valid["updaterInitialized"] and valid["publicKeyLoaded"] and valid["canCheck"] and not valid["error"], valid
     print("PASS actual app smoke initializes Sparkle and terminates without host startup:", json.dumps(valid, sort_keys=True))
     info["SUFeedURL"] = "http://example.invalid/appcast.xml"

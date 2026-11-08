@@ -4,6 +4,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-$HOME/.cache}/dualscreen-app-tests.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 SOURCE="$ROOT/host/Sources/DualScreenHost"
+bash "$ROOT/scripts/test-host-localization.sh"
 xcrun swiftc "$SOURCE/AppRuntimePolicy.swift" "$ROOT/host/Tests/AppRuntimeTests.swift" -o "$WORK/policy"
 "$WORK/policy"
 xcrun swiftc "$SOURCE/HostLog.swift" "$SOURCE/ClipboardSync.swift" "$SOURCE/FrameServer.swift" "$ROOT/host/Tests/ServerLifecycleTests.swift" -o "$WORK/server"
@@ -14,7 +15,7 @@ if [[ ! -d "$FRAMEWORK_DIR/Sparkle.framework" ]]; then
     exit 1
 fi
 xcrun swiftc -F "$FRAMEWORK_DIR" -framework Sparkle -Xlinker -rpath -Xlinker "$FRAMEWORK_DIR" \
-    "$SOURCE/AppRuntimePolicy.swift" "$SOURCE/AppUpdater.swift" "$SOURCE/AppLifecycle.swift" "$SOURCE/LaunchAgent.swift" \
+    "$SOURCE/Localization.swift" "$SOURCE/AppRuntimePolicy.swift" "$SOURCE/AppUpdater.swift" "$SOURCE/AppLifecycle.swift" "$SOURCE/LaunchAgent.swift" \
     "$ROOT/host/Tests/AppKitLifecycleTests.swift" -o "$WORK/lifecycle"
 "$WORK/lifecycle"
 # No launchctl mutations, audio-presence posts, display setup or input injection.

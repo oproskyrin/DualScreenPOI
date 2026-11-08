@@ -19,14 +19,14 @@ enum LaunchAgent {
         let data = try Data(contentsOf: URL(fileURLWithPath: plistPath))
         guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               plist["Label"] as? String == label else {
-            throw failure("Файл автостарта принадлежит другой конфигурации: \(plistPath)")
+            throw failure(L10n.format("autostart.foreign", plistPath))
         }
         return plist
     }
 
     static func install() throws {
         _ = try readOwnPlist() // never overwrite another label's file
-        guard let executable = Bundle.main.executableURL else { throw failure("Не найден исполняемый файл") }
+        guard let executable = Bundle.main.executableURL else { throw failure(L10n.text("autostart.executable")) }
         let plist = AppRuntimePolicy.launchAgent(bundleURL: Bundle.main.bundleURL, executableURL: executable)
         try FileManager.default.createDirectory(at: URL(fileURLWithPath: plistPath).deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
@@ -62,11 +62,11 @@ enum LaunchAgent {
                                                    executableURL: Bundle.main.executableURL!)
         guard previous != desired["ProgramArguments"] as? [String] || old["KeepAlive"] as? Bool != false else { return }
         guard previous.first.map({ URL(fileURLWithPath: $0).lastPathComponent == "DualScreenHost" || $0 == "/usr/bin/open" }) == true else {
-            throw failure("Неизвестная команда автостарта; отключите и включите автостарт вручную")
+            throw failure(L10n.text("autostart.unknown"))
         }
         // A legacy launchd-managed instance must not unload itself mid-update.
         if previous.first == Bundle.main.executableURL?.path {
-            throw failure("Старый автостарт запускает этот процесс напрямую. Отключите его перед обновлением")
+            throw failure(L10n.text("autostart.legacy"))
         }
         try install()
     }
@@ -76,10 +76,10 @@ enum LaunchAgent {
         let listing = try run(["list", label])
         guard listing.status == 0 else {
             if listing.output.contains("Could not find service") || listing.output.contains("Could not find specified service") || listing.status == 113 { return }
-            throw failure("Не удалось проверить автостарт: \(listing.output)")
+            throw failure(L10n.format("autostart.inspect", listing.output))
         }
         let result = try run(["bootout", "gui/\(getuid())/\(label)"])
-        guard result.status == 0 else { throw failure("Не удалось отключить старый автостарт: \(result.output)") }
+        guard result.status == 0 else { throw failure(L10n.format("autostart.disable", result.output)) }
     }
 
     private static func run(_ arguments: [String]) throws -> (status: Int32, output: String) {
@@ -92,7 +92,7 @@ enum LaunchAgent {
         try process.run()
         guard ended.wait(timeout: .now() + 5) == .success else {
             process.terminate()
-            throw failure("launchctl не ответил за 5 секунд; изменение автостарта не подтверждено")
+            throw failure(L10n.text("autostart.timeout"))
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))

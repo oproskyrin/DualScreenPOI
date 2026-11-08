@@ -76,6 +76,9 @@ class RealArtifactTests(unittest.TestCase):
         expected = {"CFBundleIdentifier": "com.oleg.dualscreen.host", "CFBundleExecutable": "DualScreenHost", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "13.0", "LSUIElement": True, "NSHighResolutionCapable": True, "SUEnableAutomaticChecks": True, "SUAutomaticallyUpdate": False, "SUAllowsAutomaticUpdates": False, "SUVerifyUpdateBeforeExtraction": True, "SURequireSignedFeed": True, "SUFeedURL": "https://github.com/oproskyrin/DualScreenPOI/releases/download/macos-updates/appcast.xml"}
         for key, value in expected.items():
             self.assertEqual(info[key], value, key)
+        self.assertEqual(info["CFBundleDevelopmentRegion"], "en")
+        self.assertEqual(info["CFBundleLocalizations"], ["en", "ru"])
+        self.assert_localizations(self.app)
         self.assertEqual(info["CFBundleVersion"], info["CFBundleShortVersionString"])
         import base64
         self.assertEqual(len(base64.b64decode(info["SUPublicEDKey"], validate=True)), 32)
@@ -91,6 +94,8 @@ class RealArtifactTests(unittest.TestCase):
         for license in ("adb-NOTICE.txt", "Sparkle-LICENSE.txt", "DualScreen-LICENSE.txt"):
             self.assertGreater((contents / "Resources/Licenses" / license).stat().st_size, 100)
         framework = contents / "Frameworks/Sparkle.framework"
+        self.assertTrue((framework / "Resources/ru.lproj").is_dir())
+        self.assertTrue((framework / "Resources/Base.lproj").is_dir())
         self.assertTrue((framework / "Versions/Current").is_symlink())
         self.assertTrue((framework / "Sparkle").is_symlink())
         for binary in (contents / "MacOS/DualScreenHost", contents / "Resources/adb", framework / "Sparkle"):
@@ -102,6 +107,13 @@ class RealArtifactTests(unittest.TestCase):
         self.assertIn("@rpath/Sparkle.framework/", host_deps)
         self.assertIn("@executable_path/../Frameworks", subprocess.check_output(["otool", "-l", str(contents / "MacOS/DualScreenHost")], text=True))
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(self.app)], check=True)
+
+    def assert_localizations(self, app):
+        for language in ("en", "ru"):
+            for filename in ("Localizable.strings", "InfoPlist.strings"):
+                relative = Path(f"{language}.lproj") / filename
+                self.assertEqual((app / "Contents/Resources" / relative).read_bytes(),
+                                 (ROOT / "host/Sources/DualScreenHost/Resources" / relative).read_bytes())
 
     def test_zip_and_installer_payload(self):
         packages = list(self.output.glob("DualScreen-v*-macos-arm64.pkg"))
@@ -118,6 +130,7 @@ class RealArtifactTests(unittest.TestCase):
             scratch = Path(scratch)
             subprocess.run(["ditto", "-x", "-k", str(archives[0]), str(scratch / "zip")], check=True)
             restored = scratch / "zip/DualScreen.app"
+            self.assert_localizations(restored)
             self.assertTrue((restored / "Contents/Frameworks/Sparkle.framework/Versions/Current").is_symlink())
             subprocess.run(["codesign", "--verify", "--deep", "--strict", str(restored)], check=True)
             subprocess.run(["pkgutil", "--expand-full", str(packages[0]), str(scratch / "pkg")], check=True)
@@ -127,6 +140,12 @@ class RealArtifactTests(unittest.TestCase):
             app_info_path, info = infos["com.oleg.dualscreen.installer"]
             self.assertEqual(info.attrib["install-location"], "/Applications")
             app_payload = app_info_path.parent / "Payload"
+            self.assert_localizations(app_payload / "DualScreen.app")
+            for language in ("en", "ru"):
+                for filename in ("Welcome.html", "ReadMe.html", "Localizable.strings"):
+                    relative = Path(f"{language}.lproj") / filename
+                    self.assertEqual((scratch / "pkg/Resources" / relative).read_bytes(),
+                                     (ROOT / "packaging/macos/installer-resources" / relative).read_bytes())
             self.assertEqual([p.name for p in app_payload.iterdir()], ["DualScreen.app"])
             subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app_payload / "DualScreen.app")], check=True)
             audio_path, audio_info = infos["com.dualscreen.audio.installer"]

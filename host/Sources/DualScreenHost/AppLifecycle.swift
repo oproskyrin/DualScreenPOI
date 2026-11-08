@@ -25,10 +25,10 @@ final class AppLifecycle: NSObject, NSApplicationDelegate {
                 guard confirmation() else { return .terminateCancel }
             } else {
                 let alert = NSAlert()
-                alert.messageText = "Завершить сеанс DualScreen?"
-                alert.informativeText = "Планшет сейчас подключён. Установка обновления или выход остановит трансляцию и освободит виртуальный экран. После обновления приложение запустится снова."
-                alert.addButton(withTitle: "Завершить сеанс и продолжить")
-                alert.addButton(withTitle: "Отмена")
+                alert.messageText = L10n.text("session.end.title")
+                alert.informativeText = L10n.text("session.end.body")
+                alert.addButton(withTitle: L10n.text("session.end.confirm"))
+                alert.addButton(withTitle: L10n.text("button.cancel"))
                 NSApp.activate(ignoringOtherApps: true)
                 guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
             }
@@ -62,12 +62,12 @@ final class AppLifecycle: NSObject, NSApplicationDelegate {
         }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let check = NSMenuItem(title: "Проверить обновления…", action: nil, keyEquivalent: "")
+        let check = NSMenuItem(title: L10n.text("menu.updates"), action: nil, keyEquivalent: "")
         updater.attach(to: check); menu.addItem(check)
-        let quit = NSMenuItem(title: "Завершить тест", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L10n.text("menu.endTest"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp; menu.addItem(quit)
         testStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        testStatusItem?.button?.title = "DS test"
+        testStatusItem?.button?.title = L10n.text("status.test")
         testStatusItem?.menu = menu
         updater.onCanCheck = { [weak self, weak updater] in
             guard let self, !self.testCheckStarted else { return }

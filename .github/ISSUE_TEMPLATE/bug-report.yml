@@ -1,0 +1,58 @@
+name: Bug report / Ошибка
+description: Report a reproducible problem (English or Russian).
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English and Russian are welcome. For security vulnerabilities, follow SECURITY.md instead of sharing exploit details here. Review logs and screenshots for private information before uploading.
+        Можно писать по-русски. Уязвимости отправляйте по SECURITY.md; обезличьте приложения к отчёту.
+  - type: input
+    id: versions
+    attributes:
+      label: App versions and source / Версии и источник
+      description: Mac host + Android client versions; release URL or local build commit; full PKG or app-only update.
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and macOS / Mac и macOS
+      description: Model, chip and exact macOS version. No serial numbers.
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Tablet and Android / Планшет и Android
+      description: Manufacturer, exact model code (e.g. TB371FC), Android and vendor OS versions. No serial numbers.
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport / Подключение
+      options:
+        - USB
+        - Wi-Fi
+        - Both / Оба
+        - Before connection / До подключения
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected and actual result / Шаги, ожидание и результат
+      description: Include repeatability and whether reconnect/restart changes it. Use a minimal non-sensitive example.
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings and permissions / Настройки и разрешения
+      description: Extend/mirror, resolution, codec, requested FPS, panel refresh if known; Screen Recording/Accessibility; installed HAL drivers; relevant toggles. For mic, say whether you reconnected after enabling. For clipboard, describe focus/app switching.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted logs or screenshots / Обезличенные журналы или снимки
+      description: Mac host.log; Android Settings → Connection log. Remove personal desktop content, usernames, device/network identifiers and secrets. Overlay values end at surface submission, not physical scanout; describe moving/static content and sample duration.

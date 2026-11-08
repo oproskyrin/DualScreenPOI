@@ -24,7 +24,8 @@ class ClientLogTest {
     @Test fun unavailableStorageNeverBreaksConnection() {
         val log = ClientLog({ null })
         log.event("connected")
-        assertEquals("Журнал пока пуст или хранилище недоступно.", log.recent().get())
+        assertEquals("", log.recent().get()) // presentation owns the localized empty-state message
         log.close()
+        assertEquals("", log.recent().get()) // a closed writer also delegates its empty state to the UI
     }
 }

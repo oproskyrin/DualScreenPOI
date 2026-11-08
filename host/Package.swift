@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "DualScreenHost",
+    defaultLocalization: "en",
     platforms: [.macOS("13.0")],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
@@ -33,6 +34,7 @@ let package = Package(
             name: "DualScreenHost",
             dependencies: ["CGVirtualDisplayShim", "VTEncoderShim", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/DualScreenHost",
+            resources: [.process("Resources")],
             linkerSettings: [
                 .linkedFramework("Foundation"),
                 .linkedFramework("CoreGraphics"),
