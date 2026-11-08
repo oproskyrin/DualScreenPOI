@@ -81,6 +81,8 @@ class RenderTiming(private val capacity: Int = 256, private val history: Int = 3
     }
 
     @Synchronized fun pendingCount(): Int = fifo.size
+    /** Copy of the recent sane capture->render samples for the sparkline. */
+    @Synchronized fun snapshotCapMs(): List<Double> = capHistory.toList()
     @Synchronized fun clear() {
         fifo.clear(); capHistory.clear(); encHistory.clear()
         lastCapMs = Double.NaN; lastEncMs = Double.NaN; avgCapMs = Double.NaN; avgEncMs = Double.NaN

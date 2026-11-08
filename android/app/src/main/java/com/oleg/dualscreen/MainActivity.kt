@@ -61,6 +61,8 @@ class MainActivity : AppCompatActivity() {
     private var handleX = 1f
     private var handleY = 0f
     private lateinit var statusText: TextView
+    private lateinit var latencyGraph: LatencyGraphView
+    private lateinit var statsBoxRef: android.widget.LinearLayout
     private lateinit var kbBuffer: EditText
     private var state = State.IDLE
     private var connection: DsxpConnection? = null
@@ -141,6 +143,10 @@ class MainActivity : AppCompatActivity() {
                     append("\nВвод планшет→Mac: ").append(fmtMs(lat.input.lastMs()))
                         .append(" · макс ").append(fmtMs(lat.input.maxMs()))
                 }
+                val synced = lat?.clock?.hasOffset == true
+                latencyGraph.visibility =
+                    if (diagnostics && synced && streaming) View.VISIBLE else View.GONE
+                latencyGraph.setSamples(lat?.renderTiming?.snapshotCapMs() ?: emptyList())
             }
             // ABR feedback is independent of whether diagnostics are visible.
             val now = android.os.SystemClock.elapsedRealtime()
@@ -263,11 +269,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildStreamControls() {
-        statusText = ui.text("", 12f, ui.ink).apply {
+        latencyGraph = LatencyGraphView(this)
+        val statsBox = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
             background = ui.shape(0xD914202E.toInt(), 10)
             setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
         }
-        root.addView(statusText, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin=ui.dp(16); bottomMargin=ui.dp(16) })
+        statusText = ui.text("", 12f, ui.ink)
+        statsBox.addView(statusText)
+        statsBox.addView(latencyGraph, android.widget.LinearLayout.LayoutParams(ui.dp(190), ui.dp(56)).apply {
+            topMargin = ui.dp(6)
+        })
+        statsBox.visibility = View.GONE
+        statsBoxRef = statsBox
+        root.addView(statsBox, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin=ui.dp(16); bottomMargin=ui.dp(16) })
         toolbar = ui.row().apply { background = ui.shape(0xEE14202E.toInt(), 14); setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6)) }
         listOf("Клавиатура" to { toggleKeyboard() }, "Настройки" to { showSettings() },
             "Отключиться" to { disconnectHome() }, "Скрыть панель" to { setToolbarVisible(false) }).forEach { (label, action) ->
@@ -343,7 +358,7 @@ class MainActivity : AppCompatActivity() {
             toolbar.visibility = View.GONE
             toolbarHandle.visibility = View.GONE
         }
-        statusText.visibility = if (live && diagnostics) View.VISIBLE else View.GONE
+        statsBoxRef.visibility = if (live && diagnostics) View.VISIBLE else View.GONE
         if (message.isNotEmpty()) { homeStatus.text = message; overlayText.text = message }
         if (busy || live) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -825,7 +840,7 @@ class MainActivity : AppCompatActivity() {
             contentDescription = "Показывать статистику"
             setOnCheckedChangeListener { _, enabled ->
                 diagnostics = enabled; prefs.edit().putBoolean("diagnostics", enabled).apply()
-                statusText.visibility = if (enabled && streaming) View.VISIBLE else View.GONE
+                statsBoxRef.visibility = if (enabled && streaming) View.VISIBLE else View.GONE
             }
         })
         ui.label(panel, "Задержка — от подачи кадра в декодер до его выдачи, не задержка Mac → планшет. Обратная связь для адаптивного битрейта работает всегда.", 13f, ui.muted)
